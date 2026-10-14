@@ -834,17 +834,26 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
                                    int(gow3_font_ttf_end - gow3_font_ttf), 18.0f, &font_config);
 
     const vk::Instance vk_instance = instance.GetInstance();
-    ImGui_ImplVulkan_LoadFunctions(
-        instance.ApiVersion(),
+    struct LoaderContext {VkInstance instance;VkDevice device;};
+    LoaderContext loader{vk_instance,static_cast<VkDevice>(instance.GetDevice())};
+    const bool functions_loaded=ImGui_ImplVulkan_LoadFunctions(
+        std::min(instance.ApiVersion(),Vulkan::TargetVulkanApiVersion),
         [](const char* name, void* user) {
-            return VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr(
-                *static_cast<const vk::Instance*>(user), name);
+            auto& loader=*static_cast<LoaderContext*>(user);
+            auto proc=VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(loader.device,name);
+            if(!proc) proc=VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr(loader.instance,name);
+            if(!proc) std::fprintf(stderr,"Overlay: Vulkan function unavailable: %s\n",name);
+            return proc;
         },
-        const_cast<vk::Instance*>(&vk_instance));
+        &loader);
+    if(!functions_loaded) {
+        std::puts("Overlay: required functions unavailable, disabled");
+        ImGui::DestroyContext();return;
+    }
 
     const VkFormat color_format = static_cast<VkFormat>(format);
     ImGui_ImplVulkan_InitInfo info{};
-    info.ApiVersion = instance.ApiVersion();
+    info.ApiVersion = std::min(instance.ApiVersion(),Vulkan::TargetVulkanApiVersion);
     info.Instance = vk_instance;
     info.PhysicalDevice = instance.GetPhysicalDevice();
     info.Device = instance.GetDevice();

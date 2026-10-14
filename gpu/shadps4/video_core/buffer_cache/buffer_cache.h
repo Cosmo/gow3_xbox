@@ -40,8 +40,13 @@ class BufferCache {
     static constexpr u64 ADDRESS_SPACE_BITS = 40;
     // gow3: arena pages are 4 GiB unless the driver's buffer size limit is lower (AMD's
     // Windows driver: 2 GiB); an arena spans up to two pages, so they shrink to half the limit.
+#ifdef GOW3_UWP
+    static constexpr u64 MAX_ARENA_PAGE_BITS = 24;
+    static constexpr u64 MIN_ARENA_PAGE_BITS = 24;
+#else
     static constexpr u64 MAX_ARENA_PAGE_BITS = 32;
     static constexpr u64 MIN_ARENA_PAGE_BITS = 30;
+#endif
     static constexpr u64 MAX_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - MIN_ARENA_PAGE_BITS);
     static constexpr u64 MIN_BLOCK_SIZE = 16_KB;
 
@@ -64,6 +69,11 @@ public:
     [[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept {
         return bda_pagetable_buffer.get();
     }
+#ifdef GOW3_UWP
+    static constexpr u32 DmaViewCount = 128;
+    std::array<vk::DescriptorBufferInfo, DmaViewCount> GetDmaViews() const;
+    const Buffer* GetNullBuffer() const { return null_buffer.get(); }
+#endif
 
     /// Retrieves the fault buffer.
     [[nodiscard]] Buffer* GetFaultBuffer() noexcept {
@@ -127,6 +137,15 @@ private:
     }
 
     const Buffer* GetArena(u64 first_block, u64 last_block);
+#ifdef GOW3_UWP
+    void InitializeDenseBuffers();
+    const Buffer* GetDenseArena(u64 first_block,u64 last_block);
+    void EnsureDenseResident(const Buffer* arena,u64 first_block,u64 last_block);
+    struct DenseView {const Buffer* arena{};u64 offset{};};
+    std::array<DenseView,DmaViewCount> dense_views{};
+    std::unordered_map<u64,u32> dense_slots;
+    std::unique_ptr<Buffer> null_buffer;
+#endif
 
     void EnsureResident(const Buffer* arena, u64 first_block, u64 last_block);
 

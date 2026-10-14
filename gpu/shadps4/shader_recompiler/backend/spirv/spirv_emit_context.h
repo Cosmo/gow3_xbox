@@ -156,8 +156,16 @@ public:
 
         // Available
         AddLabel(available_label);
+#ifdef GOW3_UWP
+        const auto [buffer, pointer_type] = buffers[dma_buffers_index].aliases[u32(PointerType::U32)];
+        const Id ordinal = OpISub(U32[1], OpUConvert(U32[1], OpShiftRightLogical(U64, addr, ConstU32(32u))), u32_one_value);
+        const Id offset = OpShiftRightLogical(U32[1], OpUConvert(U32[1], addr), ConstU32(2u));
+        const Id addr_ptr = OpAccessChain(pointer_type, buffer, ordinal, u32_zero_value, offset);
+        const Id result = OpLoad(U32[1], addr_ptr);
+#else
         const Id addr_ptr = OpConvertUToPtr(physical_pointer_type_u32, addr);
         const Id result = OpLoad(U32[1], addr_ptr, spv::MemoryAccessMask::Aligned, 4u);
+#endif
         OpBranch(merge_label);
 
         // Fallback
@@ -371,6 +379,7 @@ public:
 
     size_t flatbuf_index{};
     size_t bda_pagetable_index{};
+    size_t dma_buffers_index{};
     size_t fault_buffer_index{};
     Id physical_pointer_type_u32;
 
@@ -401,6 +410,7 @@ public:
     Id f32_to_uf10{};
 
     Id get_bda_pointer{};
+    Id kill_function{};
 
     Id read_const{};
     Id read_const_dynamic{};

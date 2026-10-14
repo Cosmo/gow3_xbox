@@ -17,12 +17,14 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <vector>
 
 extern "C" int gow3_probe_main(int argc,char **argv);
 extern "C" FILE *gow3_uwp_fopen(const char *path,const char *mode);
 extern "C" HANDLE gow3_uwp_find(const char *pattern,WIN32_FIND_DATAA *out);
 extern "C" BOOL gow3_uwp_find_next(HANDLE handle,WIN32_FIND_DATAA *out);
 static std::atomic<bool> finished{false};
+static std::atomic<bool> game_mode{false};
 #ifdef GOW3_BUILD_GRAPHICS
 #include "../graphics/present_bridge.h"
 static winrt::agile_ref<winrt::Windows::UI::Core::CoreWindow> core_window;
@@ -38,10 +40,13 @@ static void loader() {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     auto local=winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path();
     auto log=std::wstring(local)+L"\\loader.log";
-    FILE *stream=nullptr;
-    _wfreopen_s(&stream,log.c_str(),L"w",stdout);
+    _wfreopen(log.c_str(),L"w",stdout);
     auto error_log=std::wstring(local)+L"\\errors.log";
-    _wfreopen_s(&stream,error_log.c_str(),L"w",stderr);
+    _wfreopen(error_log.c_str(),L"w",stderr);
+    auto driver_log=std::wstring(local)+L"\\dozen.log";
+    HANDLE driver_stream=CreateFile2FromAppW(driver_log.c_str(),GENERIC_WRITE,
+        FILE_SHARE_READ|FILE_SHARE_WRITE,CREATE_ALWAYS,nullptr);
+    if(driver_stream!=INVALID_HANDLE_VALUE) SetStdHandle(STD_ERROR_HANDLE,driver_stream);
     setvbuf(stdout,nullptr,_IONBF,0); setvbuf(stderr,nullptr,_IONBF,0);
     std::printf("GOW3 UWP loader milestone 1\n");
     GAMING_DEVICE_MODEL_INFORMATION model{};
@@ -68,6 +73,19 @@ static void loader() {
     std::getline(settings,mode); std::getline(settings,dump);
     if(!mode.empty()&&mode.back()=='\r') mode.pop_back();
     if(!dump.empty()&&dump.back()=='\r') dump.pop_back();
+    std::ifstream debug_settings(std::wstring(local)+L"\\graphics-debug.txt");
+    for(std::string line;std::getline(debug_settings,line);) {
+        if(!line.empty()&&line.back()=='\r') line.pop_back();
+        auto separator=line.find('=');
+        if(separator==std::string::npos) continue;
+        auto key=line.substr(0,separator),value=line.substr(separator+1);
+        if(key=="DZN_DEBUG"||key=="DZN_MAX_SHADER_MODEL"||key=="DZN_MAX_D3D12_OPTIONS"||
+           key=="GOW3_DUMP_SHADERS") {
+            _putenv_s(key.c_str(),value.c_str());
+            SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
+        }
+    }
+    game_mode=(mode=="boot");
 #ifdef GOW3_BUILD_GRAPHICS
     if(mode=="graphics") { int result=Gow3Uwp::GraphicsProbe(); std::printf("Graphics probe returned %d\n",result); finished=true; return; }
 #endif
@@ -94,6 +112,12 @@ static void loader() {
         }
     }
     std::string dump_eboot=dump+"\\eboot.bin";
+    try {
+        auto file=winrt::Windows::Storage::StorageFile::GetFileFromPathAsync(winrt::to_hstring(dump_eboot)).get();
+        std::printf("Game file broker lookup: PASS (%s)\n",winrt::to_string(file.Name()).c_str());
+    } catch(winrt::hresult_error const& error) {
+        std::printf("Game file broker lookup: 0x%08x\n",static_cast<unsigned>(error.code()));
+    }
     FILE *dump_file=gow3_uwp_fopen(dump_eboot.c_str(),"rb");
     DWORD dump_error=dump_file ? 0 : GetLastError();
     std::printf("External dump eboot.bin readable: %s\n",dump_file ? "yes" : "no (only packaged-code initialization can be tested)");
@@ -118,11 +142,23 @@ static void loader() {
     std::string content=package+"\\Prepared\\content.bin";
     std::string user=winrt::to_string(local)+"\\user";
     CreateDirectoryW((std::wstring(local)+L"\\user").c_str(),nullptr);
-    std::puts("Running the existing loader and CPU runtime; graphics/media imports remain unresolved.");
-    char *args[]={const_cast<char *>("gow3-uwp"),boot.data(),const_cast<char *>("--cpu-only"),
-                  const_cast<char *>("--app0"),dump.data(),const_cast<char *>("--user"),user.data(),
-                  const_cast<char *>("--content-profile"),content.data(),const_cast<char *>("--check-imports")};
-    int result=gow3_probe_main(mode=="imports" ? 10 : 9,args);
+    _putenv_s("GOW3_GPU_USER_DIR",user.c_str());
+    _putenv_s("GOW3_CONFIG",(user+"\\graphics.cfg").c_str());
+    _putenv_s("GOW3_PAD_FILE",(winrt::to_string(local)+"\\controls.txt").c_str());
+    _putenv_s("GOW3_UPSCALER","off");
+    _putenv_s("GOW3_AUDIO","none");
+    std::puts("Running the existing loader and runtime; audio output disabled for this graphics port.");
+    std::vector<std::string> arguments={"gow3-uwp",boot};
+#ifdef GOW3_LINK_RENDERER
+    if(mode!="boot") arguments.push_back("--cpu-only");
+#else
+    arguments.push_back("--cpu-only");
+#endif
+    arguments.insert(arguments.end(),{"--app0",dump,"--user",user,"--content-profile",content});
+    if(mode=="imports") arguments.push_back("--check-imports");
+    std::vector<char*> args;
+    for(auto& argument:arguments) args.push_back(argument.data());
+    int result=gow3_probe_main(static_cast<int>(args.size()),args.data());
     std::printf("Loader returned %d\n",result); finished=true;
 }
 
@@ -147,7 +183,7 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
             std::fflush(nullptr);
             std::fclose(stdout); std::fclose(stderr);
         }).detach();
-        std::thread([] { Sleep(30000); if(!finished.load()) { std::fputs("STOP: 30 second milestone watchdog\n",stderr); std::fflush(nullptr); ExitProcess(124); } }).detach();
+        std::thread([] { Sleep(30000); if(!finished.load()&&!game_mode.load()) { std::fputs("STOP: 30 second milestone watchdog\n",stderr); std::fflush(nullptr); ExitProcess(124); } }).detach();
         while(!closed) window.Dispatcher().ProcessEvents(winrt::Windows::UI::Core::CoreProcessEventsOption::ProcessOneAndAllPending);
     }
     void Uninitialize() {}

@@ -123,13 +123,18 @@ set(SHADER_INCLUDE ${CMAKE_CURRENT_BINARY_DIR}/include)
 set(SHADER_DIR ${SHADER_INCLUDE}/video_core/host_shaders)
 set(SHADER_HEADERS "")
 function(add_host_shader FILENAME SHADER_NAME)
+    if(GOW3_UWP)
+        set(shader_api vulkan1.2)
+    else()
+        set(shader_api vulkan1.3)
+    endif()
     set(OUT ${SHADER_DIR}/${SHADER_NAME}.h)
     string(TOUPPER ${SHADER_NAME} SYMBOL)
     set(DEFINES ${ARGN})
     list(TRANSFORM DEFINES PREPEND "-D")
     add_custom_command(OUTPUT ${OUT}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_DIR}
-        COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 -o ${OUT} --vn ${SYMBOL} ${DEFINES} ${SHADER_SRC}/${FILENAME}
+        COMMAND ${GLSLANG_COMPILER} --target-env ${shader_api} -o ${OUT} --vn ${SYMBOL} ${DEFINES} ${SHADER_SRC}/${FILENAME}
         COMMAND ${CMAKE_COMMAND} "-DHEADER_FILE=${OUT}" -P ${SHADER_SRC}/AddShaderHeaderInclude.cmake
         DEPENDS ${SHADER_SRC}/${FILENAME} VERBATIM)
     set(SHADER_HEADERS ${SHADER_HEADERS} ${OUT} PARENT_SCOPE)
@@ -177,8 +182,9 @@ file(GLOB SHIM_SOURCES CONFIGURE_DEPENDS shim/*.cpp shim/*/*.cpp)
 if(GOW3_UWP)
     list(FILTER VIDEO_CORE EXCLUDE REGEX "vk_temporal_upscaler\\.cpp$")
     list(FILTER VIDEO_CORE EXCLUDE REGEX "vk_fsr4\\.cpp$|/fsr411/")
+    list(FILTER VIDEO_CORE EXCLUDE REGEX "vk_swapchain\\.cpp$")
     list(FILTER SHIM_SOURCES EXCLUDE REGEX "shim/window\\.cpp$")
-    list(APPEND VIDEO_CORE ../xbox/graphics/native_resolution.cpp)
+    list(APPEND VIDEO_CORE ../xbox/graphics/native_resolution.cpp ../xbox/graphics/swapchain.cpp ../xbox/graphics/dense_buffers.cpp)
     list(APPEND SHIM_SOURCES ../xbox/graphics/window.cpp)
 endif()
 # Windows: a DLL cannot leave the runtime_* symbols for gow3-probe.exe to resolve, so the
@@ -200,6 +206,10 @@ target_sources(gow3gpu PRIVATE third_party/imgui/imgui.cpp third_party/imgui/img
     third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
     third_party/imgui/backends/imgui_impl_vulkan.cpp)
 target_include_directories(gow3gpu PRIVATE third_party/imgui third_party/imgui/backends)
+if(GOW3_UWP)
+    set_source_files_properties(third_party/imgui/imgui.cpp PROPERTIES
+        COMPILE_DEFINITIONS "IMGUI_DISABLE_WIN32_DEFAULT_CLIPBOARD_FUNCTIONS;IMGUI_DISABLE_WIN32_DEFAULT_IME_FUNCTIONS")
+endif()
 target_compile_definitions(gow3gpu PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES
     GOW3_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf")
 set_source_files_properties(shim/gow3_overlay.cpp PROPERTIES
@@ -227,7 +237,7 @@ if (WIN32)
     target_compile_definitions(gow3gpu PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
     if(GOW3_UWP)
         target_compile_options(gow3gpu PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/../xbox/graphics/compat.h")
-        target_include_directories(gow3gpu PRIVATE ../xbox/platform ../xbox/platform/compat "${GOW3_PTHREAD}/include")
+        target_include_directories(gow3gpu PRIVATE ../xbox/platform ../xbox/platform/compat ../xbox/graphics "${GOW3_PTHREAD}/include")
         target_compile_definitions(gow3gpu PRIVATE GOW3_UWP _TIMESPEC_DEFINED)
         target_link_libraries(gow3gpu PUBLIC WindowsApp)
     else()

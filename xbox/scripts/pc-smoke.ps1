@@ -1,14 +1,28 @@
 #requires -Version 7.2
 [CmdletBinding()]
-param([ValidateSet('ready','imports','boot','storage','memory','graphics')][string]$Mode='ready',[ValidateRange(1,40)][int]$WaitSeconds=5,[switch]$Register)
+param([ValidateSet('ready','imports','boot','storage','memory','graphics')][string]$Mode='ready',[ValidateRange(1,40)][int]$WaitSeconds=5,[switch]$Register,[switch]$Isolated,[ValidateSet('Gow3.Uwp.Dev','Gow3.Uwp.Smoke')][string]$PackageName='Gow3.Uwp.Dev')
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $layout=Join-Path $root '.local/build/layout'
-foreach($process in @(Get-Process -Name gow3_uwp -ErrorAction SilentlyContinue)) {
+if($PackageName -eq 'Gow3.Uwp.Smoke') { $layout=Join-Path $root '.local/pc-layout' }
+if($Isolated) {
+    $sourceLayout=$layout
+    $layout=Join-Path $root '.local/pc-layout'
+    New-Item -ItemType Directory -Force $layout | Out-Null
+    foreach($name in @('AppxManifest.xml','gow3_uwp.exe','libwinpthread-1.dll','vulkan_dzn.dll','dxil.dll','Assets','Prepared','ThirdParty')) {
+        Copy-Item -LiteralPath (Join-Path $sourceLayout $name) -Destination $layout -Recurse -Force
+    }
+    $packageName='Gow3.Uwp.Smoke'
+    $manifest=Join-Path $layout 'AppxManifest.xml'
+    $xml=[IO.File]::ReadAllText($manifest).Replace('Name="Gow3.Uwp.Dev"','Name="Gow3.Uwp.Smoke"')
+    [IO.File]::WriteAllText($manifest,$xml,[Text.UTF8Encoding]::new($false))
+    $Register=$true
+}
+foreach($process in @(Get-Process | Where-Object ProcessName -Like 'gow3_uwp*')) {
     if($process.Path -eq (Join-Path $layout 'gow3_uwp.exe')) { Stop-Process -Id $process.Id; $process.WaitForExit(5000) | Out-Null }
 }
-if($Register) { Add-AppxPackage -Register (Join-Path $layout 'AppxManifest.xml') }
-$package=Get-AppxPackage -Name Gow3.Uwp.Dev
+if($Register) { Add-AppxPackage -Register (Join-Path $layout 'AppxManifest.xml') -ForceApplicationShutdown }
+$package=Get-AppxPackage -Name $packageName
 if(!$package) { throw 'Register the development layout first using -Register' }
 $state=Join-Path $env:LOCALAPPDATA "Packages/$($package.PackageFamilyName)/LocalState"
 New-Item -ItemType Directory -Force $state | Out-Null

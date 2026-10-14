@@ -36,6 +36,25 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
       buffer_cache{buffer_cache_}, tracker{tracker_}, blit_helper{instance, scheduler},
       tile_manager{instance, scheduler, runtime, buffer_cache.GetStreamBuffer()},
       readback_linear_images{EmulatorSettings.IsReadbackLinearImagesEnabled()} {
+#ifdef GOW3_UWP
+    null_image=UniqueImage(instance.GetDevice(),instance.GetAllocator());
+    null_image.Create({.imageType=vk::ImageType::e2D,.format=vk::Format::eR8G8B8A8Unorm,
+        .extent={1,1,1},.mipLevels=1,.arrayLayers=1,.samples=vk::SampleCountFlagBits::e1,
+        .tiling=vk::ImageTiling::eOptimal,.usage=vk::ImageUsageFlagBits::eSampled|vk::ImageUsageFlagBits::eStorage|vk::ImageUsageFlagBits::eTransferDst,
+        .sharingMode=vk::SharingMode::eExclusive});
+    null_view=Vulkan::Check(instance.GetDevice().createImageViewUnique({.image=null_image.image,.viewType=vk::ImageViewType::e2D,
+        .format=vk::Format::eR8G8B8A8Unorm,.subresourceRange={vk::ImageAspectFlagBits::eColor,0,1,0,1}}));
+    scheduler.Record([image=null_image.image](vk::CommandBuffer cmd) {
+        vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor,0,1,0,1};
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,vk::PipelineStageFlagBits::eTransfer,{}, {}, {},
+            vk::ImageMemoryBarrier{.dstAccessMask=vk::AccessFlagBits::eTransferWrite,.oldLayout=vk::ImageLayout::eUndefined,
+                .newLayout=vk::ImageLayout::eGeneral,.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                .image=image,.subresourceRange=range});
+        cmd.clearColorImage(image,vk::ImageLayout::eGeneral,vk::ClearColorValue{std::array<float,4>{0,0,0,0}},range);
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eAllCommands,{},
+            vk::MemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eTransferWrite,.dstAccessMask=vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite},{},{});
+    });
+#endif
 
     std::printf("GPU: deferred image readback %s (64 copies, 64 MiB pending limit)%s\n",
                 deferred_readbacks ? "enabled" : "disabled",

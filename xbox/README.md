@@ -119,8 +119,7 @@ a Vulkan clear, exported D3D12 image, and native CoreWindow presentation. The sa
 test passed on Series X and its displayed blue frame was verified by screenshot.
 The frame stays visible until the app closes. This is a host graphics test, not gameplay.
 Native-resolution UWP currently excludes the optional temporal upscalers.
-The existing renderer compiles but is not yet connected to the executable: sparse
-buffers, buffer device address, push descriptors and robustness2 remain compatibility work.
+The renderer is now connected in `boot` mode. The latest integration checkpoint is below.
 
 1. Completed: allocation on demand, alias/remap preservation, libc and module initialization,
    and original game entry on both PC UWP and Xbox. Continue validating memory during rendering.
@@ -135,3 +134,42 @@ buffers, buffer device address, push descriptors and robustness2 remain compatib
 
 Reference measurements and Kyty gameplay results are useful evidence, but do not prove
 the same memory patterns, shader behavior or performance for God of War III.
+
+## Milestone 4: connected renderer and intro initialization
+
+The full guest graphics services, controller APIs, silent audio timing, ATRAC9, MP3 and
+video decoders are linked into the UWP executable. PC and Series X runs complete libc
+and Fios initialization, enter the game, hide its system splash screen and start the
+intro loader, audio driver and streaming threads. Package API validation passes.
+There is **no game-rendered picture or playable gameplay yet**.
+
+UWP uses ordinary GPU buffers in place of sparse arenas. Shader constant-memory reads
+use a logical page table and an array of ordinary buffer descriptors instead of Vulkan
+buffer device addresses. Host push bindings allocate, update and bind normal descriptor
+sets, with their pools owned by command buffers. Absent guest buffers and images select
+shader permutations returning zero, backed by real non-null resources. These paths need
+continued validation with actual game draws, memory pressure and alias coherence.
+
+All optional upscaling and RCAS are disabled; the console's FSR1 shader failed during
+startup. The native CoreWindow bridge handles presentation. The UWP page-fault handler
+commits new pages before asking GPU tracking to resolve their protection: the opposite
+order retried the game's first heap write indefinitely. WinRT gamepad input and vibration
+are connected, but no controller was attached during these runs. Audio output is silent.
+The optional ImGui overlay stays disabled when its Vulkan loader lacks required functions.
+
+Current stops: the PC intro polls a GPU completion value; Series X faults inside
+`umd12ddi_arden.dll` at the initial graphics stage. These are retained diagnostic runs,
+not successful gameplay tests. Shader dumps and logs remain private in `.local/` or the
+app's LocalState. `graphics-debug.txt` accepts `GOW3_DUMP_SHADERS`, `DZN_DEBUG`,
+`DZN_MAX_SHADER_MODEL` and `DZN_MAX_D3D12_OPTIONS`; it is optional and never packaged.
+Dozen's separate static CRT writes `LocalState/dozen.log`, while the app writes its own
+loader and error logs. Logs can be downloaded while the app is running.
+
+The manifest declares the actual dump extensions because removable-storage access is
+filtered by file type. A native open of the exact executable succeeds on the latest
+console run, while its WinRT broker lookup still reports access denied; permissions need
+validation for the remaining assets. See [Microsoft's file-access documentation](https://learn.microsoft.com/en-us/windows/uwp/files/file-access-permissions).
+
+`pc-smoke.ps1 -Isolated -Mode boot` registers a separate `Gow3.Uwp.Smoke` development
+layout if the primary PC package is stuck in servicing. Subsequent runs use
+`-PackageName Gow3.Uwp.Smoke`; the console retains its original package identity.

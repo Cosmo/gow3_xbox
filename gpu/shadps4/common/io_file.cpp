@@ -20,6 +20,9 @@ extern "C" FILE* gow3_uwp_fopen(const char*, const char*);
 #include <io.h>
 #include <share.h>
 #include <windows.h>
+#ifdef GOW3_UWP
+#include <memoryapi.h>
+#endif
 #else
 #include <unistd.h>
 #endif
@@ -279,8 +282,12 @@ uintptr_t IOFile::GetFileMapping() {
     HANDLE mapping = nullptr;
 
     if (file_access_mode == FileAccessMode::ReadWrite) {
+#ifdef GOW3_UWP
+        mapping = CreateFileMappingFromApp(hfile, nullptr, PAGE_READWRITE, 0, nullptr);
+#else
         mapping = CreateFileMapping2(hfile, NULL, FILE_MAP_WRITE, PAGE_READWRITE, SEC_COMMIT, 0,
                                      NULL, NULL, 0);
+#endif
     } else {
         mapping = hfile;
     }

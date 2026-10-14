@@ -54,8 +54,10 @@ struct DiscardShaderEmitter : public Sirit::Module {
         ASSERT_MSG(locations.size() <= 2, "more than 2 clip planes locations");
 
         AddCapability(spv::Capability::Shader);
+#ifndef GOW3_UWP
         AddExtension("SPV_EXT_demote_to_helper_invocation");
         AddCapability(spv::Capability::DemoteToHelperInvocation);
+#endif
         SetMemoryModel(spv::AddressingModel::Logical, spv::MemoryModel::GLSL450);
         const Id void_function{TypeFunction(void_id)};
         main = OpFunction(void_id, spv::FunctionControlMask::MaskNone, void_function);
@@ -94,8 +96,12 @@ struct DiscardShaderEmitter : public Sirit::Module {
             OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
             OpBranchConditional(clipped, kill_label, merge_label);
             AddLabel(kill_label);
+#ifdef GOW3_UWP
+            OpKill();
+#else
             OpDemoteToHelperInvocationEXT();
             OpBranch(merge_label);
+#endif
             AddLabel(merge_label);
         }
 

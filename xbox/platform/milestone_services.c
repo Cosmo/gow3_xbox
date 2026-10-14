@@ -4,6 +4,7 @@
 #include "gpu/gow3gpu.h"
 #include <stdio.h>
 #define UNPORTED(name) uintptr_t runtime_##name##_resolve(const char *nid) { (void)nid; return 0; }
+#ifndef GOW3_LINK_RENDERER
 UNPORTED(audio)
 UNPORTED(ajm)
 UNPORTED(videodec)
@@ -23,7 +24,6 @@ int gow3gpu_text_input_poll(char *text,uint64_t size) { (void)text; (void)size; 
 int gow3gpu_choice_begin(const char *title,const char *const *items,const char *const *images,int count,int focus) { (void)title; (void)items; (void)images; (void)count; (void)focus; return 0; }
 int gow3gpu_choice_poll(void) { return -2; }
 int gow3gpu_overlay_captures_input(void) { return 0; }
-int vulkan_smoke(void) { fputs("UWP milestone: Vulkan backend unavailable\n",stderr); return 21; }
 /* Optional overlay hooks are never installed in --cpu-only mode. */
 float ABI gow3_orbs_gain(void *player,float value) { (void)player; return value; }
 void gow3_orbs_status(int supported) { (void)supported; }
@@ -34,3 +34,5 @@ void gow3_actor_status(int supported) { (void)supported; }
 uintptr_t gow3_damage_multiplier(int taken) { (void)taken; return 0; }
 uintptr_t gow3_orb_pickup_multiplier(unsigned kind) { (void)kind; return 0; }
 void gow3_stat_multipliers_status(int damage,int pickup) { (void)damage; (void)pickup; }
+#endif
+int vulkan_smoke(void) { fputs("Use the UWP graphics probe mode\n",stderr); return 21; }

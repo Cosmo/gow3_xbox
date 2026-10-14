@@ -19,6 +19,7 @@ struct Profile {
     bool support_int64{};
     bool support_float16{};
     bool support_float64{};
+    bool support_demote{true};
     bool supports_denorm_behavior_independence{};
     bool supports_rounding_mode_independence{};
     bool support_fp16_denorm_preserve{};

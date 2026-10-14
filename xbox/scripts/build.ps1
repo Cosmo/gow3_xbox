@@ -5,7 +5,7 @@ $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $repo=Split-Path $root -Parent
 $local=Join-Path $root '.local'
-foreach($process in @(Get-Process -Name gow3_uwp -ErrorAction SilentlyContinue)) {
+foreach($process in @(Get-Process | Where-Object ProcessName -Like 'gow3_uwp*')) {
     if($process.Path -eq (Join-Path $local 'build/layout/gow3_uwp.exe')) {
         Stop-Process -Id $process.Id; $process.WaitForExit(5000) | Out-Null
     }

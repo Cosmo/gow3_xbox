@@ -21,6 +21,9 @@
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #include <vk_mem_alloc.h>
+#ifdef GOW3_UWP
+#include "descriptor_fallback.h"
+#endif
 
 namespace Vulkan {
 
@@ -310,13 +313,24 @@ bool Instance::CreateDevice() {
     };
 
     // Required
+#ifndef GOW3_UWP
     ASSERT_MSG(add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     ASSERT_MSG(add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+#else
+    const bool native_push=add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+    if(!native_push) push_descriptor_props.maxPushDescriptors=0;
+    ASSERT(add_extension(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME));
+    ASSERT(add_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME));
+    ASSERT(add_extension(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME));
+    ASSERT(add_extension(VK_KHR_MAINTENANCE_4_EXTENSION_NAME));
+    ASSERT(add_extension(VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME));
+#endif
     ASSERT_MSG(add_extension(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}",
                VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+#ifndef GOW3_UWP
     ASSERT_MSG(add_extension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
 
@@ -327,6 +341,10 @@ bool Instance::CreateDevice() {
                "Required Vulkan feature unavailable: robustImageAccess2");
     ASSERT_MSG(robustness2_features.nullDescriptor,
                "Required Vulkan feature unavailable: nullDescriptor");
+#else
+    const bool native_robustness2=add_extension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+    if(!native_robustness2) std::puts("UWP resources: core robustness and shader specialization for absent guest buffers/images");
+#endif
 
     // Optional
     maintenance_5 = add_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
@@ -532,6 +550,7 @@ bool Instance::CreateDevice() {
                 // gow3: required by the FSR 3 accumulate shaders (vk_temporal_upscaler).
                 .shaderStorageImageWriteWithoutFormat =
                     features.shaderStorageImageWriteWithoutFormat,
+                .shaderStorageBufferArrayDynamicIndexing = features.shaderStorageBufferArrayDynamicIndexing,
                 .shaderClipDistance = features.shaderClipDistance,
                 .shaderFloat64 = features.shaderFloat64,
                 .shaderInt64 = features.shaderInt64,
@@ -569,6 +588,12 @@ bool Instance::CreateDevice() {
             .shaderIntegerDotProduct = vk13_features.shaderIntegerDotProduct,
             .maintenance4 = vk13_features.maintenance4,
         },
+#ifdef GOW3_UWP
+        vk::PhysicalDeviceDynamicRenderingFeaturesKHR{.dynamicRendering=true},
+        vk::PhysicalDeviceSynchronization2FeaturesKHR{.synchronization2=true},
+        vk::PhysicalDeviceMaintenance4FeaturesKHR{.maintenance4=true},
+        vk::PhysicalDeviceShaderIntegerDotProductFeaturesKHR{.shaderIntegerDotProduct=true},
+#endif
         // Extensions
         vk::PhysicalDeviceCustomBorderColorFeaturesEXT{
             .customBorderColors = true,
@@ -722,6 +747,17 @@ bool Instance::CreateDevice() {
         device_chain.unlink<vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE>();
     }
 
+#ifdef GOW3_UWP
+    if(properties.apiVersion<VK_API_VERSION_1_3) {
+        device_chain.unlink<vk::PhysicalDeviceVulkan13Features>();
+    } else {
+        device_chain.unlink<vk::PhysicalDeviceDynamicRenderingFeaturesKHR>();
+        device_chain.unlink<vk::PhysicalDeviceSynchronization2FeaturesKHR>();
+        device_chain.unlink<vk::PhysicalDeviceMaintenance4FeaturesKHR>();
+        device_chain.unlink<vk::PhysicalDeviceShaderIntegerDotProductFeaturesKHR>();
+    }
+    if(!native_robustness2) device_chain.unlink<vk::PhysicalDeviceRobustness2FeaturesEXT>();
+#endif
     auto [device_result, dev] = physical_device.createDeviceUnique(device_chain.get());
     if (device_result != vk::Result::eSuccess) {
         LOG_CRITICAL(Render_Vulkan, "Failed to create device: {}", vk::to_string(device_result));
@@ -730,6 +766,9 @@ bool Instance::CreateDevice() {
     device = std::move(dev);
 
     VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
+#ifdef GOW3_UWP
+    if(!native_push) Gow3Uwp::InstallDescriptorFallback(*device);
+#endif
     pipeline_binaries =
         InitializePipelineBinaryCache(*device, pipeline_binaries, pipeline_binary_global_key);
     if (Dlss* dlss = Dlss::Get()) {
@@ -781,7 +820,12 @@ void Instance::CreateAllocator() {
     };
 
     const VmaAllocatorCreateInfo allocator_info = {
-        .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
+        .flags =
+#ifdef GOW3_UWP
+            0,
+#else
+            VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
+#endif
         .physicalDevice = physical_device,
         .device = *device,
         .pVulkanFunctions = &functions,

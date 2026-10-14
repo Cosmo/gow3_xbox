@@ -141,6 +141,32 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
     fprintf(stderr,"  rax=%016llx rbx=%016llx rcx=%016llx rdx=%016llx\n  rsi=%016llx rdi=%016llx rbp=%016llx rsp=%016llx\n",
             c->Rax,c->Rbx,c->Rcx,c->Rdx,c->Rsi,c->Rdi,c->Rbp,c->Rsp);
     if (gpu_enabled) gow3gpu_dump_guest_writes(info);
+    uintptr_t stack_return=0;
+    SIZE_T stack_bytes=0;
+    if(ReadProcessMemory(GetCurrentProcess(),(void *)(uintptr_t)c->Rsp,&stack_return,sizeof(stack_return),&stack_bytes)&&stack_bytes==sizeof(stack_return)) {
+        describe_address(where,sizeof(where),stack_return);
+        fprintf(stderr,"  stack return: %s\n",where);
+    }
+#ifdef GOW3_UWP
+    CONTEXT unwind=*c;
+    for(unsigned depth=0;depth<24&&unwind.Rip;++depth) {
+        DWORD64 base=0,establisher=0;
+        void *handler_data=NULL;
+        PRUNTIME_FUNCTION function=RtlLookupFunctionEntry(unwind.Rip,&base,NULL);
+        DWORD64 previous_stack=unwind.Rsp;
+        if(function) RtlVirtualUnwind(UNW_FLAG_NHANDLER,base,unwind.Rip,function,&unwind,
+                                     &handler_data,&establisher,NULL);
+        else {
+            SIZE_T got=0;
+            if(!ReadProcessMemory(GetCurrentProcess(),(void *)(uintptr_t)unwind.Rsp,
+                                  &unwind.Rip,sizeof(unwind.Rip),&got)||got!=sizeof(unwind.Rip)) break;
+            unwind.Rsp+=sizeof(unwind.Rip);
+        }
+        if(unwind.Rsp<=previous_stack) break;
+        describe_address(where,sizeof(where),(uintptr_t)unwind.Rip);
+        fprintf(stderr,"  native #%u %s\n",depth,where);
+    }
+#endif
     /* rbp chain (guest and host code keep frame pointers). */
     uintptr_t rbp=(uintptr_t)c->Rbp;
     for (int depth=0; depth<24 && rbp; ++depth) {
@@ -178,11 +204,13 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
         }
     }
     if (code==EXCEPTION_ACCESS_VIOLATION && record->NumberParameters>=2) {
-        /* GPU page tracking (write-protected guest pages) is resolved first. */
-        if (gpu_enabled && gow3gpu_handle_fault(info,(void *)record->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;
 #ifdef GOW3_UWP
+        /* A reserved UWP page must exist before GPU tracking can resolve its access.
+         * Otherwise a successful GPU write-fault handler retries the untouched page. */
         if (runtime_memory_handle_commit_fault((uintptr_t)record->ExceptionInformation[1],(int)record->ExceptionInformation[0])) return EXCEPTION_CONTINUE_EXECUTION;
 #endif
+        /* GPU page tracking resolves protection faults on committed guest pages. */
+        if (gpu_enabled && gow3gpu_handle_fault(info,(void *)record->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;
         if (runtime_fault_recover) {
             /* A speculative guest memory read (GPU draw preparation) faulted: the thread resumes
              * in gow3_longjmp, outside the exception dispatcher, back at its recovery point. */

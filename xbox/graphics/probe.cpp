@@ -3,7 +3,9 @@
 #include <cstdio>
 #include <array>
 #include <stdexcept>
+#ifndef GOW3_LINK_RENDERER
 VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
+#endif
 
 namespace Gow3Uwp {
 struct ProbeDisplay {

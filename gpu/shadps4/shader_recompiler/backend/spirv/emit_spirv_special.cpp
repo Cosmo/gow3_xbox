@@ -203,7 +203,8 @@ void EmitEpilogue(EmitContext& ctx) {
 }
 
 void EmitDiscard(EmitContext& ctx) {
-    ctx.OpDemoteToHelperInvocationEXT();
+    if(ctx.profile.support_demote) ctx.OpDemoteToHelperInvocationEXT();
+    else ctx.OpFunctionCall(ctx.void_id,ctx.kill_function);
 }
 
 void EmitDiscardCond(EmitContext& ctx, Id condition) {
@@ -212,7 +213,7 @@ void EmitDiscardCond(EmitContext& ctx, Id condition) {
     ctx.OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
     ctx.OpBranchConditional(condition, kill_label, merge_label);
     ctx.AddLabel(kill_label);
-    ctx.OpDemoteToHelperInvocationEXT();
+    EmitDiscard(ctx);
     ctx.OpBranch(merge_label);
     ctx.AddLabel(merge_label);
 }

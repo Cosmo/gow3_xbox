@@ -1250,7 +1250,17 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 // Else the value may come from a fence that thread has yet to write: let it
                 // catch up before yielding to other queues.
+                u32 wait_retries=0;
                 while (!wait_reg_mem->Test(regs.reg_array)) {
+#ifdef GOW3_UWP
+                    if(++wait_retries==100000 && EmulatorSettings.IsDumpShaders()) {
+                        const u32 current=wait_reg_mem->mem_space.Value()==PM4CmdWaitRegMem::MemSpace::Memory
+                            ? *wait_reg_mem->Address() : regs.reg_array[wait_reg_mem->Reg()];
+                        std::fprintf(stderr,"UWP GPU wait: address=%#llx value=%#x ref=%#x mask=%#x function=%u\n",
+                            wait_reg_mem->Address<u64>(),current,wait_reg_mem->ref,wait_reg_mem->mask,
+                            u32(wait_reg_mem->function.Value()));
+                    }
+#endif
                     if (rasterizer && !rasterizer->DrawPipeIdle()) {
                         rasterizer->DrainDrawPipe(static_cast<u32>(opcode));
                         continue;

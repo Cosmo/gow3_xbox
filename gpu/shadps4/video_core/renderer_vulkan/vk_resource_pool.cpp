@@ -180,7 +180,12 @@ vk::DescriptorSet DescriptorHeap::Commit(vk::DescriptorSetLayout set_layout) {
 
 void DescriptorHeap::CreateDescriptorPool() {
     const vk::DescriptorPoolCreateInfo pool_info = {
-        .flags = vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind,
+        .flags =
+#ifdef GOW3_UWP
+            vk::DescriptorPoolCreateFlagBits{},
+#else
+            vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind,
+#endif
         .maxSets = descriptor_heap_count,
         .poolSizeCount = static_cast<u32>(pool_sizes.size()),
         .pPoolSizes = pool_sizes.data(),
