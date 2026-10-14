@@ -141,10 +141,13 @@ The full guest graphics services, controller APIs, silent audio timing, ATRAC9, 
 video decoders are linked into the UWP executable. PC and Series X runs complete libc
 and Fios initialization, enter the game, hide its system splash screen and start the
 intro loader, audio driver and streaming threads. Package API validation passes.
-The current PC run renders the Sony and Santa Monica logos, the brightness setup
-screen and the opening movie. Scripted Cross input advances brightness setup.
-The user also reported gameplay in an earlier PC UWP window; that needs a repeat
-with captured frames before console testing resumes. Audio output remains silent.
+The current PC run renders the Sony and Santa Monica logos, brightness setup,
+the opening movie and the 3D main menu. Scripted Cross input advances setup,
+New Game and difficulty selection. Single-sample rendering fixes the menu's
+striped depth corruption and is the UWP default (`GOW3_NO_MSAA=0` restores MSAA).
+Series X passes the narrow-buffer detiler after the Dozen compiler fix, reaches
+the opening movie, and has verified TV output for the startup logos. Playable
+gameplay verification remains pending. Audio output remains silent.
 
 UWP uses ordinary GPU buffers in place of sparse arenas. Shader constant-memory reads
 use a logical page table and an array of ordinary buffer descriptors instead of Vulkan
@@ -166,9 +169,11 @@ textures use buffer uploads, and image views stay within their RGBA/BGRA family.
 The Dozen fork removes unused SSBO declarations before descriptor remapping,
 avoiding rejected root signatures from the unused clip-plane buffer.
 
-PC D3D12 diagnostics still report multisample and resource-state mismatches during
-later draws. The last Series X run preceded these PC fixes; console verification
-is pending. Shader dumps and logs remain private in `.local/` or the
+Earlier PC MSAA runs reported sample-count, image-view and resource-state
+mismatches. Continue validating later draws and console memory pressure.
+Dozen's compute compiler must use the device's native 16-bit capability for both
+its NIR bit-size mask and buffer-operation lowering; otherwise the console
+rejects the 8-bit texture detiler. Shader dumps and logs remain private in `.local/` or the
 app's LocalState. `graphics-debug.txt` accepts `GOW3_DUMP_SHADERS`, `DZN_DEBUG`,
 `DZN_MAX_SHADER_MODEL`, `DZN_MAX_D3D12_OPTIONS` and `GOW3_UWP_CAPTURE`; it is optional
 and never packaged. Capture saves the latest frame and a bounded 32-image contact
