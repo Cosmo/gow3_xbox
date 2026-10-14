@@ -14,6 +14,11 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 foreach($name in @('AppxManifest.xml','gow3_uwp.exe','libwinpthread-1.dll','Assets','Prepared','ThirdParty')) {
     Copy-Item -LiteralPath (Join-Path $layout $name) -Destination $stage -Recurse
 }
+foreach($name in @('vulkan_dzn.dll','dxil.dll')) {
+    if(Test-Path -LiteralPath (Join-Path $layout $name)) {
+        Copy-Item -LiteralPath (Join-Path $layout $name) -Destination $stage
+    }
+}
 $certificate=Get-ChildItem Cert:/CurrentUser/My | Where-Object { $_.Subject -eq 'CN=Gow3UwpDev' -and $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date).AddDays(7) } | Select-Object -First 1
 if(!$certificate) {
     $certificate=New-SelfSignedCertificate -Subject 'CN=Gow3UwpDev' -Type Custom -KeyUsage DigitalSignature -CertStoreLocation Cert:/CurrentUser/My -FriendlyName 'God of War UWP Dev' -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3','2.5.29.19={text}CA=false')

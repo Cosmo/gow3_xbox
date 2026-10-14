@@ -112,6 +112,16 @@ refuse existing files unless `-Overwrite` is supplied. Each retained download re
 
 ## Next milestones
 
+Graphics build: set `research_root` and `mesa_root` in ignored `.local/settings.json`,
+fetch the pinned headers with `xbox/scripts/boost-headers.py`, then run
+`build.ps1 -Graphics`. `pc-smoke.ps1 -Mode graphics` checks the packaged Dozen driver,
+a Vulkan clear, exported D3D12 image, and native CoreWindow presentation. The same
+test passed on Series X and its displayed blue frame was verified by screenshot.
+The frame stays visible until the app closes. This is a host graphics test, not gameplay.
+Native-resolution UWP currently excludes the optional temporal upscalers.
+The existing renderer compiles but is not yet connected to the executable: sparse
+buffers, buffer device address, push descriptors and robustness2 remain compatibility work.
+
 1. Completed: allocation on demand, alias/remap preservation, libc and module initialization,
    and original game entry on both PC UWP and Xbox. Continue validating memory during rendering.
 2. Prefer the user's Dozen fork for preserving the Vulkan renderer, after a bounded

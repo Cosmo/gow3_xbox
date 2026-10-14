@@ -7,6 +7,7 @@
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.Gaming.Input.h>
 #include <windows.h>
+#include <unknwn.h>
 #include <gamingdeviceinformation.h>
 #include <fileapifromapp.h>
 #include <cstdio>
@@ -22,6 +23,16 @@ extern "C" FILE *gow3_uwp_fopen(const char *path,const char *mode);
 extern "C" HANDLE gow3_uwp_find(const char *pattern,WIN32_FIND_DATAA *out);
 extern "C" BOOL gow3_uwp_find_next(HANDLE handle,WIN32_FIND_DATAA *out);
 static std::atomic<bool> finished{false};
+#ifdef GOW3_BUILD_GRAPHICS
+#include "../graphics/present_bridge.h"
+static winrt::agile_ref<winrt::Windows::UI::Core::CoreWindow> core_window;
+extern "C" IUnknown* gow3_uwp_core_window() {
+    auto window=core_window.get();
+    void* result=nullptr;
+    winrt::copy_to_abi(window,result);
+    return reinterpret_cast<IUnknown*>(result);
+}
+#endif
 
 static void loader() {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -57,6 +68,9 @@ static void loader() {
     std::getline(settings,mode); std::getline(settings,dump);
     if(!mode.empty()&&mode.back()=='\r') mode.pop_back();
     if(!dump.empty()&&dump.back()=='\r') dump.pop_back();
+#ifdef GOW3_BUILD_GRAPHICS
+    if(mode=="graphics") { int result=Gow3Uwp::GraphicsProbe(); std::printf("Graphics probe returned %d\n",result); finished=true; return; }
+#endif
     if(mode=="memory") {
         char *args[]={const_cast<char *>("gow3-uwp"),const_cast<char *>("--memory-selftest")};
         int result=gow3_probe_main(2,args);
@@ -120,6 +134,9 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
     }
     void SetWindow(winrt::Windows::UI::Core::CoreWindow const& value) {
         window=value; window.Closed([this](auto const&,auto const&) { closed=true; });
+#ifdef GOW3_BUILD_GRAPHICS
+        core_window=winrt::agile_ref(value);
+#endif
     }
     void Load(winrt::hstring const&) {}
     void Run() {

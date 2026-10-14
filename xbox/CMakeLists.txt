@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(gow3_uwp LANGUAGES C CXX)
+option(GOW3_BUILD_GRAPHICS "Build the existing renderer for UWP" OFF)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_C_STANDARD_LIBRARIES "")
@@ -25,6 +26,23 @@ target_link_options(gow3_uwp PRIVATE /APPCONTAINER /HIGHENTROPYVA:NO /STACK:1677
 target_link_directories(gow3_uwp BEFORE PRIVATE "$ENV{VCToolsInstallDir}/lib/x64/store")
 target_link_libraries(gow3_uwp PRIVATE WindowsApp "${GOW3_PTHREAD}/lib/libwinpthread.dll.a")
 set(GOW3_LAYOUT "${CMAKE_BINARY_DIR}/layout")
+if(GOW3_BUILD_GRAPHICS)
+  add_compile_options(/clang:-Wno-unused-command-line-argument)
+  set(GOW3_UWP ON)
+  set(GOW3_LTO OFF CACHE BOOL "" FORCE)
+  add_subdirectory("${GOW3_ROOT}/gpu" "${CMAKE_BINARY_DIR}/gpu")
+  target_sources(gow3_uwp PRIVATE graphics/probe.cpp graphics/present_bridge.cpp)
+  target_include_directories(gow3_uwp PRIVATE "${GOW3_ROOT}/gpu/shadps4")
+  target_compile_definitions(gow3_uwp PRIVATE GOW3_BUILD_GRAPHICS VK_USE_PLATFORM_WIN32_KHR)
+  target_link_libraries(gow3_uwp PRIVATE Vulkan::Headers d3d12 dxgi)
+  set(GOW3_DOZEN_ROOT "${GOW3_MESA_ROOT}/build/dozen-uwp")
+  add_custom_command(TARGET gow3_uwp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${GOW3_LAYOUT}/ThirdParty"
+    COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_DOZEN_ROOT}/src/microsoft/vulkan/vulkan_dzn.dll" "${GOW3_LAYOUT}"
+    COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_MESA_ROOT}/tools/dxc/bin/x64/dxil.dll" "${GOW3_LAYOUT}"
+    COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_MESA_ROOT}/mesa/licenses/MIT" "${GOW3_LAYOUT}/ThirdParty/Mesa-MIT.txt"
+    COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_MESA_ROOT}/tools/dxc/LICENCE-MIT.txt" "${GOW3_MESA_ROOT}/tools/dxc/LICENSE-LLVM.txt" "${GOW3_MESA_ROOT}/tools/dxc/LICENSE-MS.txt" "${GOW3_LAYOUT}/ThirdParty")
+endif()
 add_custom_command(TARGET gow3_uwp POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "${GOW3_LAYOUT}/Assets" "${GOW3_LAYOUT}/Prepared" "${GOW3_LAYOUT}/ThirdParty"
   COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:gow3_uwp>" "${GOW3_LAYOUT}"

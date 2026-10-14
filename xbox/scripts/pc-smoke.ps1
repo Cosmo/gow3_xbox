@@ -1,6 +1,6 @@
 #requires -Version 7.2
 [CmdletBinding()]
-param([ValidateSet('ready','imports','boot','storage','memory')][string]$Mode='ready',[ValidateRange(1,40)][int]$WaitSeconds=5,[switch]$Register)
+param([ValidateSet('ready','imports','boot','storage','memory','graphics')][string]$Mode='ready',[ValidateRange(1,40)][int]$WaitSeconds=5,[switch]$Register)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $layout=Join-Path $root '.local/build/layout'

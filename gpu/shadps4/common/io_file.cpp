@@ -10,6 +10,10 @@
 #include "common/logging/log.h"
 #include "common/path_util.h"
 
+#ifdef GOW3_UWP
+extern "C" FILE* gow3_uwp_fopen(const char*, const char*);
+#endif
+
 #ifdef _WIN32
 #include "common/ntapi.h"
 
@@ -184,7 +188,12 @@ int IOFile::Open(const fs::path& path, FileAccessMode mode, FileType type, FileS
     errno = 0;
     int result = 0;
 
-#ifdef _WIN32
+#ifdef GOW3_UWP
+    const auto wide_mode = AccessModeToWStr(mode, type);
+    std::string narrow_mode(wide_mode, wide_mode + std::wcslen(wide_mode));
+    file = gow3_uwp_fopen(PathToUTF8String(path).c_str(), narrow_mode.c_str());
+    result = file ? 0 : errno;
+#elif defined(_WIN32)
     if (flag != FileShareFlag::ShareNone) {
         file = _wfsopen(path.c_str(), AccessModeToWStr(mode, type), ToWindowsFileShareFlag(flag));
         result = errno;
@@ -236,7 +245,11 @@ void IOFile::Unlink() {
 
     // Mark the file for deletion
     // TODO: Also remove the file path?
-#ifdef _WIN64
+#ifdef GOW3_UWP
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    HANDLE hfile = reinterpret_cast<HANDLE>(_get_osfhandle(fileno(file)));
+    SetFileInformationByHandle(hfile, FileDispositionInfo, &disposition, sizeof(disposition));
+#elif defined(_WIN64)
     FILE_DISPOSITION_INFORMATION disposition;
     IO_STATUS_BLOCK iosb;
 

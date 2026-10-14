@@ -187,7 +187,7 @@ void TextureCache::ProcessDownloadImages() {
                     WatchReadback<true>(copy->guest_address, copy->size);
                     if (Vulkan::WaitDiagnostics::Enabled()) {
                         // Which images go back to RAM each frame (the report lists the busiest).
-                        auto* slot = std::ranges::find(readback_images, image.info.guest_address,
+                        auto slot = std::ranges::find(readback_images, image.info.guest_address,
                                                        &ReadbackImageStat::address);
                         if (slot == readback_images.end()) {
                             slot = std::ranges::find(readback_images, VAddr{0}, &ReadbackImageStat::address);
