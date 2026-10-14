@@ -147,9 +147,13 @@ New Game and difficulty selection. Single-sample rendering fixes the menu's
 striped depth corruption and is the UWP default (`GOW3_NO_MSAA=0` restores MSAA).
 Series X passes the narrow-buffer detiler after the Dozen compiler fix, reaches
 the opening movie, and has verified TV output for the logos and opening movie. Playable
-gameplay verification remains pending. Series X reached the opening scene on Gaia,
+gameplay is verified on desktop UWP: the user confirmed movement, attacks and sound
+after the page-protection fix. The run continued beyond nine minutes with the
+performance panel active. Scene textures still show substantial corruption.
+Series X reached the opening scene on Gaia,
 then failed a guest page commit with error 1455. Iteration has returned to desktop UWP.
-Desktop audio output is verified with XAudio2; console audio is not yet retested.
+XAudio2 sound and the controller overlay toggle are user-confirmed on desktop and
+Series X package 1.0.26287.2315. Sustained console gameplay remains unverified.
 
 The initial Kyty-style performance panel shows FPS, frame time history, process CPU
 usage and total app RAM usage/budget. View + Menu + both triggers toggles it on
@@ -166,7 +170,8 @@ same UWP lock. A fault on a committed page also restores its tracked protection
 when the Windows protection disagrees. A desktop freeze was traced to a guest write
 repeating with tracked read/write permissions while Windows kept the page read-only.
 The packaged memory self-test covers concurrent commits/protection changes and
-recovery from that mismatch; the game is still being retested past that point.
+recovery from that mismatch. The fixed desktop run passed the frozen cinematic,
+reached Gaia and responded to movement and attack input.
 
 UWP uses ordinary GPU buffers in place of sparse arenas. Shader constant-memory reads
 use a logical page table and an array of ordinary buffer descriptors instead of Vulkan
