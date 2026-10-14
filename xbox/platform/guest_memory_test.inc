@@ -6,6 +6,7 @@ static void *uwp_test_protect_pages(void *opaque) {
     }
     return NULL;
 }
+extern uint64_t gow3_uwp_app_memory_usage(void);
 int runtime_memory_selftest(void) {
     int64_t physical=0; void *first=NULL,*alias=NULL,*remapped=NULL;
     puts("UWP memory contract self-test starting");
@@ -63,11 +64,25 @@ int runtime_memory_selftest(void) {
     if(!VirtualQuery((void *)target,&after,sizeof(after))||after.Protect!=PAGE_READWRITE) return 36;
     *(volatile uint32_t *)target=0xabcdef;
     if(release_flexible(first,256*PAGE)) return 37;
+    const uint64_t memory_before=gow3_uwp_app_memory_usage();
+    first=NULL;
+    const uint64_t probe_size=UINT64_C(64)*1024*1024;
+    if(map_flexible(&first,probe_size,3,0)) return 38;
+    for(uint64_t offset=0;offset<probe_size;offset+=PAGE) *(volatile uint32_t *)((uintptr_t)first+offset)=0x12345678;
+    Sleep(250);
+    const uint64_t memory_peak=gow3_uwp_app_memory_usage();
+    if(release_flexible(first,probe_size)) return 39;
+    if(!VirtualQuery(first,&after,sizeof(after))||after.State==MEM_COMMIT) return 40;
+    Sleep(250);
+    const uint64_t memory_after=gow3_uwp_app_memory_usage();
+    printf("UWP 64 MiB release probe: before=%" PRIu64 " MiB, peak=%" PRIu64 " MiB, after=%" PRIu64 " MiB\n",
+        memory_before>>20,memory_peak>>20,memory_after>>20);
     if(flexible_bytes) return 22;
     puts("PASS: lazy zero pages, remap preservation, live aliases, protected host writes, zero on reuse");
     puts("PASS: partial flexible unmap retains the other page and reuses a zero page");
     puts("PASS: 4 KiB protection boundaries survive first commit and protected host copies");
     puts("PASS: concurrent page commits and protection changes agree with tracked permissions");
     puts("PASS: a stale read-only host page recovers to its tracked writable protection");
+    puts("PASS: released guest pages are no longer committed in Windows");
     uwp_memory_report(); return 0;
 }

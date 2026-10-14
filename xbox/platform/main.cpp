@@ -25,6 +25,9 @@ extern "C" HANDLE gow3_uwp_find(const char *pattern,WIN32_FIND_DATAA *out);
 extern "C" BOOL gow3_uwp_find_next(HANDLE handle,WIN32_FIND_DATAA *out);
 static std::atomic<bool> finished{false};
 static std::atomic<bool> game_mode{false};
+extern "C" uint64_t gow3_uwp_app_memory_usage() {
+    return winrt::Windows::System::MemoryManager::AppMemoryUsage();
+}
 #ifdef GOW3_BUILD_GRAPHICS
 #include "../graphics/present_bridge.h"
 #include "../graphics/overlay.h"

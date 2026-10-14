@@ -2,6 +2,8 @@
 #include "overlay.h"
 #include "overlay_chord.h"
 #include "imgui.h"
+#include "video_core/renderer_vulkan/vk_instance.h"
+#include <vk_mem_alloc.h>
 #include <windows.h>
 #include <winrt/Windows.System.h>
 #include <algorithm>
@@ -41,7 +43,7 @@ void Presented() {
     }
     last_frame=now;
 }
-void Render() {
+void Render(const Vulkan::Instance& instance) {
     if(!Visible()) return;
     thread_local bool apartment=false;
     if(!apartment) {
@@ -52,6 +54,7 @@ void Render() {
     const auto now=Clock::now();
     static auto sampled=Clock::time_point{};
     static uint64_t used=0,limit=0,cpu_time=0;
+    static uint64_t gpu_allocated=0,gpu_reserved=0;
     static double cpu=0;
     if(now-sampled>=std::chrono::milliseconds(250)) {
         try {
@@ -70,6 +73,10 @@ void Render() {
             cpu_time=total;
         }
         sampled=now;
+        VmaTotalStatistics stats{};
+        vmaCalculateStatistics(instance.GetAllocator(),&stats);
+        gpu_allocated=stats.total.statistics.allocationBytes;
+        gpu_reserved=stats.total.statistics.blockBytes;
     }
     float sum=0;size_t count=0;
     for(;count<frame_count&&sum<1000;++count)
@@ -100,6 +107,10 @@ void Render() {
         ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::TextUnformatted("RAM");ImGui::TableNextColumn();
         if(limit<(uint64_t(64)<<30)) ImGui::Text("%llu / %llu MiB",used>>20,limit>>20);
         else ImGui::Text("%llu MiB",used>>20);
+        ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::TextUnformatted("GPU allocated");
+        ImGui::TableNextColumn();ImGui::Text("%llu MiB",gpu_allocated>>20);
+        ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::TextUnformatted("GPU reserved");
+        ImGui::TableNextColumn();ImGui::Text("%llu MiB",gpu_reserved>>20);
         ImGui::EndTable();
     }
     ImGui::End();ImGui::PopStyleVar(2);ImGui::PopStyleColor();

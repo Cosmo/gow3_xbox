@@ -828,6 +828,9 @@ void Instance::CreateAllocator() {
 #endif
         .physicalDevice = physical_device,
         .device = *device,
+#ifdef GOW3_UWP
+        .preferredLargeHeapBlockSize = 16_MB,
+#endif
         .pVulkanFunctions = &functions,
         .instance = *instance,
         .vulkanApiVersion = TargetVulkanApiVersion,

@@ -159,6 +159,29 @@ The initial Kyty-style performance panel shows FPS, frame time history, process 
 usage and total app RAM usage/budget. View + Menu + both triggers toggles it on
 release, consuming the chord while held; F3 toggles it on desktop. The panel is
 visible by default. FPS counts newly presented game frames, excluding reused frames.
+GPU allocated/reserved rows report VMA live allocations and allocator blocks separately;
+these are GPU figures, not values to add to the app's RAM total on every platform.
+
+UWP uses 16 MiB preferred VMA blocks, following Kyty's GPU memory-savings path.
+Staging prewarms 32 MiB, retains 64 MiB per ring and retires eligible idle blocks
+after 120 ticks; in-flight GPU uses must still complete before release. The native
+desktop renderer keeps its original defaults. Dense GPU arenas still retain their
+allocations for the process lifetime, including superseded arenas: this needs a
+separate safe retirement/eviction policy.
+
+The packaged memory self-test measures app accounting around a 64 MiB guest-memory
+allocation. On desktop UWP it reported 351 MiB before, 447 MiB after touching it and
+383 MiB after releasing it: the release returned 64 MiB, and `VirtualQuery` confirmed
+that those guest pages were no longer committed. This verifies the guest release path;
+it does not establish a working console swap system.
+
+Kyty's current Xbox code uses a cold-page pager (`src/xbox/lazyRegions.h`,
+`pagerStore.h` and `src/kernel/memoryAddressSpace.inc`), rather than relying only on
+the sparse-file approach described in older research notes. It uses 64 KiB windows,
+atomic page restoration, host-I/O pinning, a dynamic guest budget, 768 MiB planning
+headroom and a 384 MiB emergency margin. GoW's UWP backend does not yet implement
+that pager. Any adaptation must preserve physical aliases, GPU page protections
+and host-I/O pin lifetimes, and be validated under an enforced desktop memory cap.
 
 The host handles UWP `BackRequested`, matching Kyty's game page, so Xbox B can
 remain the guest Circle button without invoking system back navigation. Physical

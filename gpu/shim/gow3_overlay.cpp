@@ -1174,7 +1174,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
 #ifdef GOW3_UWP
-    Gow3Uwp::Overlay::Render();
+    Gow3Uwp::Overlay::Render(*overlay_instance);
 #endif
     if (loading) {
         LoadingScreen();

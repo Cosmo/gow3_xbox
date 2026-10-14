@@ -25,9 +25,17 @@ namespace {
 // ~2 ms per 16 MiB block. Streaming bursts a few seconds apart re-created the blocks trimmed
 // in between and copies into them ran at 0.3 GB/s (stutter). Blocks now live 30 s idle, the
 // upload ring keeps GOW3_STAGING_KEEP_MB (512) and is populated at startup.
+#ifdef GOW3_UWP
+constexpr u64 RING_IDLE_FRAMES = 120;
+constexpr u64 LARGE_IDLE_FRAMES = 120;
+constexpr u64 PREWARM_BLOCKS = 2;
+constexpr u64 DEFAULT_KEEP_MB = 64;
+#else
 constexpr u64 RING_IDLE_FRAMES = 3000;
 constexpr u64 LARGE_IDLE_FRAMES = 3000;
 constexpr u64 PREWARM_BLOCKS = 8;
+constexpr u64 DEFAULT_KEEP_MB = 512;
+#endif
 constexpr u64 LARGE_MIN_GRANULARITY = 64_KB;
 constexpr u64 BLOCK_SIZE = 16_MB;
 
@@ -41,7 +49,7 @@ u64 RoundAllocationSize(u64 size) {
 StagingBufferPool::StagingBufferPool(const Instance& instance_, Scheduler& scheduler_)
     : instance{instance_}, scheduler{scheduler_} {
     const char* env = std::getenv("GOW3_STAGING_KEEP_MB");
-    keep_blocks = (env ? std::strtoull(env, nullptr, 10) : 512) * 1_MB / BLOCK_SIZE;
+    keep_blocks = (env ? std::strtoull(env, nullptr, 10) : DEFAULT_KEEP_MB) * 1_MB / BLOCK_SIZE;
     Ring& ring = rings[u32(MemoryType::HostUncached)];
     for (u64 i = 0; i < PREWARM_BLOCKS; ++i) {
         auto& block = ring.blocks.emplace_back(Block{
