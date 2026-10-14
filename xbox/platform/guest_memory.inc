@@ -103,6 +103,11 @@ int runtime_memory_handle_commit_fault(uintptr_t address,int access) {
                     handled=VirtualProtectFromApp((void *)subpage,4096,access==8 ? PAGE_EXECUTE_READ : PAGE_READWRITE,&old);
                     if(handled && access==8) FlushInstructionCache(GetCurrentProcess(),(void *)subpage,4096);
                 }
+            } else if(!handled) {
+                MEMORY_BASIC_INFORMATION info; DWORD old;
+                uintptr_t subpage=address&~(uintptr_t)4095;
+                if(VirtualQuery((void *)subpage,&info,sizeof(info))&&info.State==MEM_COMMIT&&info.Protect!=win_prot(wanted))
+                    handled=VirtualProtectFromApp((void *)subpage,4096,win_prot(wanted),&old);
             }
         }
     }
@@ -183,14 +188,17 @@ static int host_unmap(uintptr_t address,uint64_t size) {
     return 0;
 }
 static int host_protect(uintptr_t address,uint64_t size,int prot) {
+    AcquireSRWLockExclusive(&uwp_commit_lock);
+    int result=0;
     for(uintptr_t at=address&~(uintptr_t)4095;at<address+size;at+=4096) {
         UwpPage *page=uwp_page(at); if(!page||!page->mapped) continue;
         MEMORY_BASIC_INFORMATION info; DWORD old;
-        if(!VirtualQuery((void *)at,&info,sizeof(info))) return -1;
-        if(info.State==MEM_COMMIT && !VirtualProtectFromApp((void *)at,4096,win_prot(prot),&old)) return -1;
+        if(!VirtualQuery((void *)at,&info,sizeof(info))) { result=-1;break; }
+        if(info.State==MEM_COMMIT && !VirtualProtectFromApp((void *)at,4096,win_prot(prot),&old)) { result=-1;break; }
         page->protection[(at-page->address)/4096]=prot;
     }
-    return 0;
+    ReleaseSRWLockExclusive(&uwp_commit_lock);
+    return result;
 }
 static void host_discard(uint64_t offset,uint64_t size) {
     if(!uwp_physical) return;

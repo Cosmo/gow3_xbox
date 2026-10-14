@@ -1,3 +1,11 @@
+static void *uwp_test_protect_pages(void *opaque) {
+    uintptr_t base=(uintptr_t)opaque;
+    for(unsigned round=0;round<32;++round) for(unsigned i=0;i<256;++i) {
+        if(host_protect(base+i*PAGE+8192,4096,PROT_READ)||
+           host_protect(base+i*PAGE+8192,4096,PROT_READ|PROT_WRITE)) return (void *)1;
+    }
+    return NULL;
+}
 int runtime_memory_selftest(void) {
     int64_t physical=0; void *first=NULL,*alias=NULL,*remapped=NULL;
     puts("UWP memory contract self-test starting");
@@ -38,9 +46,28 @@ int runtime_memory_selftest(void) {
     if(map_flexible(&remapped,PAGE,3,0)) return 19;
     if(*(volatile uint32_t *)remapped || value[PAGE/4]!=0xdef) return 20;
     if(release_flexible(remapped,PAGE) || release_flexible((unsigned char *)first+PAGE,PAGE)) return 21;
+    first=NULL;
+    if(map_flexible(&first,256*PAGE,3,0)) return 29;
+    pthread_t protector;
+    if(pthread_create(&protector,NULL,uwp_test_protect_pages,first)) return 30;
+    for(unsigned i=0;i<256;++i) if(*(volatile uint32_t *)((uintptr_t)first+i*PAGE+8192)) return 31;
+    void *thread_result=NULL;
+    if(pthread_join(protector,&thread_result)||thread_result) return 32;
+    for(unsigned i=0;i<256;++i) {
+        if(!VirtualQuery((void *)((uintptr_t)first+i*PAGE+8192),&after,sizeof(after))||after.Protect!=PAGE_READWRITE) return 33;
+    }
+    DWORD old;
+    uintptr_t target=(uintptr_t)first+8192;
+    if(!VirtualProtectFromApp((void *)target,4096,PAGE_READONLY,&old)) return 34;
+    if(!runtime_memory_handle_commit_fault(target,1)) return 35;
+    if(!VirtualQuery((void *)target,&after,sizeof(after))||after.Protect!=PAGE_READWRITE) return 36;
+    *(volatile uint32_t *)target=0xabcdef;
+    if(release_flexible(first,256*PAGE)) return 37;
     if(flexible_bytes) return 22;
     puts("PASS: lazy zero pages, remap preservation, live aliases, protected host writes, zero on reuse");
     puts("PASS: partial flexible unmap retains the other page and reuses a zero page");
     puts("PASS: 4 KiB protection boundaries survive first commit and protected host copies");
+    puts("PASS: concurrent page commits and protection changes agree with tracked permissions");
+    puts("PASS: a stale read-only host page recovers to its tracked writable protection");
     uwp_memory_report(); return 0;
 }

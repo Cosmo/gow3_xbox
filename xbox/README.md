@@ -161,6 +161,13 @@ remain the guest Circle button without invoking system back navigation. Physical
 B-button verification is pending. Visibility, suspension and resume events are
 logged; startup memory samples are bounded to the first two minutes.
 
+Guest page commits, protected backing writes and GPU protection changes share the
+same UWP lock. A fault on a committed page also restores its tracked protection
+when the Windows protection disagrees. A desktop freeze was traced to a guest write
+repeating with tracked read/write permissions while Windows kept the page read-only.
+The packaged memory self-test covers concurrent commits/protection changes and
+recovery from that mismatch; the game is still being retested past that point.
+
 UWP uses ordinary GPU buffers in place of sparse arenas. Shader constant-memory reads
 use a logical page table and an array of ordinary buffer descriptors instead of Vulkan
 buffer device addresses. Host push bindings allocate, update and bind normal descriptor

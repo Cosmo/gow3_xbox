@@ -5,6 +5,14 @@ $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $layout=Join-Path $root '.local/build/layout'
 if($PackageName -eq 'Gow3.Uwp.Smoke') { $layout=Join-Path $root '.local/pc-layout' }
+$targetLayout=if($Isolated) { Join-Path $root '.local/pc-layout' } else { $layout }
+$targetExe=[IO.Path]::GetFullPath((Join-Path $targetLayout 'gow3_uwp.exe'))
+foreach($process in @(Get-Process | Where-Object ProcessName -Like 'gow3_uwp*')) {
+    if($process.Path -and [IO.Path]::GetFullPath($process.Path) -eq $targetExe) {
+        Stop-Process -Id $process.Id -ErrorAction Stop
+        if(!$process.WaitForExit(5000)) { throw 'The previous desktop test process did not exit' }
+    }
+}
 if($Isolated) {
     $sourceLayout=$layout
     $layout=Join-Path $root '.local/pc-layout'
@@ -12,14 +20,13 @@ if($Isolated) {
     foreach($name in @('AppxManifest.xml','gow3_uwp.exe','libwinpthread-1.dll','vulkan_dzn.dll','dxil.dll','Assets','Prepared','ThirdParty')) {
         Copy-Item -LiteralPath (Join-Path $sourceLayout $name) -Destination $layout -Recurse -Force
     }
+    $symbols=Join-Path $root '.local/build/gow3_uwp.pdb'
+    if(Test-Path -LiteralPath $symbols) { Copy-Item -LiteralPath $symbols -Destination $layout -Force }
     $packageName='Gow3.Uwp.Smoke'
     $manifest=Join-Path $layout 'AppxManifest.xml'
     $xml=[IO.File]::ReadAllText($manifest).Replace('Name="Gow3.Uwp.Dev"','Name="Gow3.Uwp.Smoke"')
     [IO.File]::WriteAllText($manifest,$xml,[Text.UTF8Encoding]::new($false))
     $Register=$true
-}
-foreach($process in @(Get-Process | Where-Object ProcessName -Like 'gow3_uwp*')) {
-    if($process.Path -eq (Join-Path $layout 'gow3_uwp.exe')) { Stop-Process -Id $process.Id -ErrorAction SilentlyContinue; $process.WaitForExit(5000) | Out-Null }
 }
 if($Register) { Add-AppxPackage -Register (Join-Path $layout 'AppxManifest.xml') -ForceApplicationShutdown }
 $package=Get-AppxPackage -Name $packageName
