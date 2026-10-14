@@ -13,7 +13,7 @@
 #include "actor_hook.h"
 #include "damage_hook.h"
 #include "gpu/gow3gpu.h"
-#if !defined(__x86_64__) || !defined(__GNUC__)
+#if (!defined(__x86_64__) && !defined(_M_X64)) || (!defined(__GNUC__) && !defined(__clang__))
 #error This prototype requires x86-64 GCC or Clang (including MinGW).
 #endif
 #ifdef _WIN32
@@ -562,7 +562,10 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
  * released before the new process opens its own. */
 void runtime_restart(void) {
     fflush(NULL);
-#ifdef _WIN32
+#ifdef GOW3_UWP
+    fputs("STOP: restart is not available in the UWP loader milestone\n",stderr);
+    _exit(21);
+#elif defined(_WIN32)
     /* run.py sets GOW3_RESTART_COMMAND: the launch command line, started again (new patches). */
     const char *command=getenv("GOW3_RESTART_COMMAND");
     puts("Runtime: restarting through run.py");
@@ -611,7 +614,11 @@ static int cpu_supported(char *missing, size_t size) {
     return 1;
 }
 
+#ifdef GOW3_UWP
+int gow3_probe_main(int argc, char **argv) {
+#else
 int main(int argc, char **argv) {
+#endif
     setvbuf(stdout, NULL, _IONBF, 0);
 #ifndef _WIN32
     /* Keep host heap objects handed to the guest (thread handles, TLS) in the
@@ -635,7 +642,14 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
     /* The PS4 user range must stay free of host allocations (GPU driver, heaps), and the guest
      * TCB needs one of the 64 TEB TLS slots before DLLs (Vulkan drivers) take them. */
+#ifndef GOW3_UWP
     runtime_memory_reserve();
+#else
+    /* A UWP host already owns pages in this interval. Defer the desktop pool's
+     * reservation until its first allocation, so the CPU loader can be diagnosed
+     * independently. Xbox guest-memory mapping is the next milestone. */
+    puts("UWP milestone: large guest-pool reservation deferred until first guest allocation");
+#endif
     runtime_thread_tcb_offset();
 #endif
     int cpu_only = 0, strict_imports = 0, check_imports = 0;

@@ -1,0 +1,104 @@
+# Xbox UWP port
+
+Target: Xbox Series X Developer Mode. The same development package runs on Windows PC
+for smoke testing. Initial priority is playable behavior; resolution and frame rate will
+follow measurements. Commit at meaningful working milestones, not individual edits.
+
+## Milestone 1: native loader
+
+The package builds the existing `src/probe.c` loader and CPU runtime with clang-cl,
+the Store CRT, WindowsApp.lib and UCRT winpthread. A small CoreApplication host supplies
+activation, private configuration, logs and a 30-second initialization watchdog.
+Windows desktop and Linux builds retain their existing implementations.
+
+The package is **not playable yet**. Graphics, GPU event queues, audio, video decoding
+and the guest controller APIs remain unresolved and are reported explicitly. Host
+controller enumeration is diagnostic only. No successful guest implementation is
+substituted for an unported service.
+
+Validated on Windows PC and Series X on 2026-10-14:
+
+- The UWP package registers/installs and activates.
+- Package imports are available through WindowsApp.lib, the Store CRT or packaged DLLs.
+- Allocating read-write memory, changing it to execute-read, and executing a System V
+  x64 function returns the expected value, 42, on both machines.
+- The EU dump's linked image maps 31,082,556 bytes in six segments. The existing loader
+  applies 15,940 relocations and redirects 117 TCB loads to the Windows TLS slot.
+- The actual game-supplied libc initializer starts and registers its application heap API.
+- The desktop guest-memory allocator then stops with error 487 while reserving the
+  entire PS4 user interval. UWP host allocations already occupy part of that interval.
+- Series X reports a 5,120 MiB app-memory budget.
+- The configured external dump is readable from PC UWP. It is not yet readable at the
+  configured Xbox location; console evidence here covers packaged native code only.
+- Deployment, private run configuration upload, launch and both log downloads work
+  through Device Portal. No other console packages are changed.
+
+The loader's early whole-range reservation is deferred in the UWP build so code loading
+can be tested independently. The first guest pool allocation still uses the existing
+allocator and produces the failure above. This is a diagnostic milestone, not a memory
+workaround. The external dump-access check is separate from packaged-code execution:
+an inaccessible dump does not establish working game-file IO.
+
+## Files and privacy
+
+- `platform/`: UWP host and compatibility adapters. Only this build uses the adapters.
+- `scripts/`: setup, build, import verification, packaging, PC smoke tests and console operations.
+- `.local/`: ignored device configuration, dependency copies, prepared game code, build output,
+  signed packages, PC logs, transfer receipts and raw Xbox results.
+- `settings.example.json`: generic local-settings schema. Actual paths stay in `.local/settings.json`.
+
+Development packages contain private, dump-derived prepared executable code. They are
+local test artifacts, not redistributable releases. Neither prepared code nor full game
+assets are committed. Signing keys remain in the local Windows certificate store.
+
+XboxResearch is a read-only reference. The console operations are adapted from its shared
+scripts; this project's copies keep transfers and results under `.local/`. Dependency
+copies include winpthread's license. Build and console operations do not write into the
+reference project and do not require its scripts at runtime.
+
+## Reproduce locally
+
+PowerShell 7.2+, Visual Studio C++ tools with clang-cl, a Windows SDK, CMake 3.20+,
+Ninja and Python are required. Existing setup is stored in ignored `.local/`.
+On a fresh checkout, `scripts/setup.ps1` accepts explicit `ResearchRoot`, `PcDump`,
+`XboxDump` and `Python` paths and copies only the required local dependency files and
+selected console configuration. It refuses to overwrite an existing setup.
+
+```powershell
+./xbox/scripts/build.ps1 -Prepare
+./xbox/scripts/check-imports.ps1
+./xbox/scripts/assets.ps1
+./xbox/scripts/pc-smoke.ps1 -Register -Mode ready
+./xbox/scripts/pc-smoke.ps1 -Mode boot
+./xbox/scripts/package.ps1
+```
+
+`ready` runs the native-code smoke test; `imports` lists unresolved imports; `boot`
+attempts linked-module initialization and then the game's entry point. The package's
+LocalState `run.txt` selects a mode on line 1 and a dump folder on line 2. Logs are
+`LocalState/loader.log` and `LocalState/errors.log`. They close when the worker finishes;
+startup failures that terminate the process also close them.
+
+Console scripts require explicit `-Console` and `-App` selection. Use the installed
+PackageFullName when more than one version exists. Run installation, initial `ready`
+launch, then configuration upload: the first launch initializes LocalState. Uploads
+refuse existing files unless `-Overwrite` is supplied. Each retained download requires
+`-Probe`, a unique `-RunId`, and `-RunPath`; results stay under `.local/results`.
+
+## Next milestones
+
+1. Replace UWP whole-range reservation and committed backing sections with guest-aware
+   reservations and allocation on demand. Measure direct-memory aliases and protected
+   host copies rather than dropping their semantics. Pass libc and module initialization
+   on both PC UWP and Xbox.
+2. Prefer the user's Dozen fork for preserving the Vulkan renderer, after a bounded
+   compatibility check. It already runs basic jobs on Series X, but lacks buffer device
+   address below shader model 6.6, push descriptors and robustness2. Mutable image views
+   also have a measured console failure. The existing reference Vulkan-to-D3D12 layer
+   supplies proven workarounds and remains an alternative if the Dozen work is too broad.
+   Capability names alone are insufficient; implement and test their behavior.
+3. Port guest controller input, audio/media and game-file IO; verify saves and lifecycle.
+4. Reach gameplay, then fit measured CPU/GPU memory and frame times to the console budget.
+
+Reference measurements and Kyty gameplay results are useful evidence, but do not prove
+the same memory patterns, shader behavior or performance for God of War III.

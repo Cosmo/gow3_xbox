@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" IgnorableNamespaces="uap">
+  <Identity Name="Gow3.Uwp.Dev" Publisher="CN=Gow3UwpDev" Version="1.0.0.0" ProcessorArchitecture="x64" />
+  <Properties><DisplayName>God of War III UWP Loader</DisplayName><PublisherDisplayName>Gow3 PC</PublisherDisplayName><Logo>Assets\StoreLogo.png</Logo></Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+    <PackageDependency Name="Microsoft.VCLibs.140.00" MinVersion="14.0.30035.0" Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
+  </Dependencies>
+  <Resources><Resource Language="en-us" /></Resources>
+  <Applications>
+    <Application Id="App" Executable="gow3_uwp.exe" EntryPoint="Gow3.Uwp.App">
+      <uap:VisualElements DisplayName="God of War III UWP Loader" Description="Native runtime development milestone" BackgroundColor="#181818" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#181818" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+  <Capabilities><Capability Name="codeGeneration" /><uap:Capability Name="removableStorage" /></Capabilities>
+</Package>

@@ -14,6 +14,9 @@
 #include <io.h>
 #include <direct.h>
 #include <unistd.h>
+#ifdef GOW3_UWP
+#include "runtime_compat.h"
+#endif
 #include <sys/types.h>
 #include <sys/stat.h>
 

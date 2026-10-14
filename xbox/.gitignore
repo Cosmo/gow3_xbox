@@ -1,0 +1,9 @@
+/.local/
+/build/
+/AppPackages/
+*.local.json
+*.local.ps1
+*.pfx
+*.cer
+*.credential.xml
+*.user
