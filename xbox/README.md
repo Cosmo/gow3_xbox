@@ -4,7 +4,7 @@ Target: Xbox Series X Developer Mode. The same development package runs on Windo
 for smoke testing. Initial priority is playable behavior; resolution and frame rate will
 follow measurements. Commit at meaningful working milestones, not individual edits.
 
-## Milestone 1: native loader
+## Milestone 1 checkpoint: native loader
 
 The package builds the existing `src/probe.c` loader and CPU runtime with clang-cl,
 the Store CRT, WindowsApp.lib and UCRT winpthread. A small CoreApplication host supplies
@@ -56,6 +56,30 @@ scripts; this project's copies keep transfers and results under `.local/`. Depen
 copies include winpthread's license. Build and console operations do not write into the
 reference project and do not require its scripts at runtime.
 
+## Milestone 2: original game entry and sparse memory
+
+The UWP allocator now reserves guest windows on demand and commits touched 16 KiB guest
+pages. Host protection remains granular to 4 KiB, as required by GPU page tracking.
+Direct-page contents survive unmapping/remapping. Live aliases promote just those physical
+pages to small shared sections, retaining real alias coherence without one giant section.
+Released pages are zero on reuse; partial flexible unmapping retains the remaining page.
+
+All memory contract tests pass on PC UWP and Series X, including protected host copies
+and mixed 4 KiB protections applied before the first touch. Both platforms complete the
+linked libc and Fios initializers and execute the game's actual entry point. The game
+maps 2.75 GiB of direct memory; at the current stop it has committed 107 guest pages,
+about 1.67 MiB, in addition to loader/host memory and bookkeeping.
+
+Current stop: `sceVideoOutOpen`, because the graphics backend is not yet linked into UWP.
+The console can list the configured USB game folder and open its executable through both
+native FromApp and WinRT APIs. Listing the drive root is unnecessary and remains denied.
+`storage` mode captures this distinction; `memory` mode runs the memory contract tests.
+
+Limits still to validate during rendering: memory pressure, large alias sets (the console
+limits shared sections), and concurrency between GPU watchers and host copies. Private
+protected host copies briefly open their pages while holding the runtime metadata lock;
+guest writes during that window need the renderer's coherence policy to be checked.
+
 ## Reproduce locally
 
 PowerShell 7.2+, Visual Studio C++ tools with clang-cl, a Windows SDK, CMake 3.20+,
@@ -70,6 +94,7 @@ selected console configuration. It refuses to overwrite an existing setup.
 ./xbox/scripts/assets.ps1
 ./xbox/scripts/pc-smoke.ps1 -Register -Mode ready
 ./xbox/scripts/pc-smoke.ps1 -Mode boot
+./xbox/scripts/pc-smoke.ps1 -Mode memory
 ./xbox/scripts/package.ps1
 ```
 
@@ -87,10 +112,8 @@ refuse existing files unless `-Overwrite` is supplied. Each retained download re
 
 ## Next milestones
 
-1. Replace UWP whole-range reservation and committed backing sections with guest-aware
-   reservations and allocation on demand. Measure direct-memory aliases and protected
-   host copies rather than dropping their semantics. Pass libc and module initialization
-   on both PC UWP and Xbox.
+1. Completed: allocation on demand, alias/remap preservation, libc and module initialization,
+   and original game entry on both PC UWP and Xbox. Continue validating memory during rendering.
 2. Prefer the user's Dozen fork for preserving the Vulkan renderer, after a bounded
    compatibility check. It already runs basic jobs on Series X, but lacks buffer device
    address below shader model 6.6, push descriptors and robustness2. Mutable image views

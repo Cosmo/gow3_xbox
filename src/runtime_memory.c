@@ -80,7 +80,9 @@ static Vma *vmas; static size_t vma_count, vma_capacity;
 #ifndef _WIN32
 static int pool_fd=-1;
 #endif
+#ifndef GOW3_UWP
 static unsigned char *backing_base; /* second view of the pool: host writes bypass guest/GPU page protection */
+#endif
 #define FLEX_SPAN (UINT64_C(1024) * 1024 * 1024)
 static uint64_t flex_bitmap[FLEX_SPAN/PAGE/64];
 /* GPU hooks (gow3gpu): notified outside the lock, in order, after each operation. */
@@ -98,7 +100,9 @@ static int host_prot(int prot) {
     /* GPU read/write bits (0x10/0x20) need host access for the future GPU backend. */
     return ((prot & 0x11) ? PROT_READ : 0) | ((prot & 0x22) ? PROT_WRITE|PROT_READ : 0) | ((prot & 4) ? PROT_EXEC|PROT_READ : 0);
 }
-#ifdef _WIN32
+#ifdef GOW3_UWP
+#include "guest_memory.inc"
+#elif defined(_WIN32)
 /* ---- host mappings (Windows) ----
  * [USER_MIN,USER_MAX) is covered by regions, each one placeholder or one view of the
  * section. Mapping a range carves it out as a single placeholder first: views overlapping
@@ -324,7 +328,7 @@ static int split_at(uintptr_t a) {
     if (i==vma_count || vmas[i].start>=a) return 0;
     Vma right=vmas[i];
     right.start=a;
-    if (right.kind==KIND_DIRECT) right.phys+=a-vmas[i].start;
+    if (right.kind==KIND_DIRECT || right.kind==KIND_FLEXIBLE) right.phys+=a-vmas[i].start;
     vmas[i].end=a;
     return vma_insert(i+1,right);
 }
@@ -349,10 +353,21 @@ static int overlaps(uintptr_t start, uintptr_t end, int ignore_reserved) {
 /* First-fit search in the PS4 user range, starting from the hint. */
 static uintptr_t find_free(uintptr_t hint, uint64_t size, uint64_t alignment) {
     uintptr_t at=align_up(hint<USER_MIN ? USER_MIN : hint, alignment);
+#ifdef GOW3_UWP
+    while (size<=USER_MAX-at) {
+        size_t i=vma_index(at);
+        if (i<vma_count && vmas[i].start<at+size) { at=align_up(vmas[i].end,alignment); continue; }
+        uintptr_t available=uwp_available(at,size);
+        if (!available) return 0;
+        if (available!=at) { at=align_up(available,alignment); continue; }
+        return at;
+    }
+#else
     for (size_t i=vma_index(at); at+size<=USER_MAX; ++i) {
         if (i==vma_count || vmas[i].start>=at+size) return at;
         at=align_up(vmas[i].end,alignment);
     }
+#endif
     return 0;
 }
 static void drop_range(uintptr_t start, uintptr_t end) {
@@ -746,7 +761,11 @@ int runtime_memory_write_backing(uintptr_t address, const void *data, uint64_t s
         size_t i=vma_index(at);
         if (i==vma_count || vmas[i].start>at || vmas[i].kind==KIND_RESERVED) { ok=0; break; }
         uint64_t n=(vmas[i].end<end ? vmas[i].end : end)-at;
+#ifdef GOW3_UWP
+        if (!uwp_backing_write(at,(const unsigned char *)data+(at-address),n)) { ok=0; break; }
+#else
         memcpy(backing_base+vmas[i].phys+(at-vmas[i].start),(const unsigned char *)data+(at-address),n);
+#endif
         at+=n;
     }
     read_unlock();
@@ -825,9 +844,15 @@ int runtime_memory_is_mapped(uintptr_t address, uint64_t size) {
     return result;
 }
 void runtime_memory_report(void) {
+#ifdef GOW3_UWP
+    uwp_memory_report();
+#endif
     printf("Runtime: direct memory allocations=%zu, maps=%zu, live=%" PRIu64 ", budget=%" PRIu64 "\n",
            allocations, maps, live_bytes, POOL_SIZE);
     printf("Runtime: flexible maps=%zu, in use=%" PRIu64 ", protects=%zu, queries=%zu, regions=%zu\n",
            flexible_maps, flexible_bytes, protects, queries, vma_count);
 }
+#ifdef GOW3_UWP
+#include "guest_memory_test.inc"
+#endif
 

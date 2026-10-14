@@ -8,6 +8,7 @@
 #include <winrt/Windows.Gaming.Input.h>
 #include <windows.h>
 #include <gamingdeviceinformation.h>
+#include <fileapifromapp.h>
 #include <cstdio>
 #include <cstring>
 #include <io.h>
@@ -18,6 +19,8 @@
 
 extern "C" int gow3_probe_main(int argc,char **argv);
 extern "C" FILE *gow3_uwp_fopen(const char *path,const char *mode);
+extern "C" HANDLE gow3_uwp_find(const char *pattern,WIN32_FIND_DATAA *out);
+extern "C" BOOL gow3_uwp_find_next(HANDLE handle,WIN32_FIND_DATAA *out);
 static std::atomic<bool> finished{false};
 
 static void loader() {
@@ -54,14 +57,48 @@ static void loader() {
     std::getline(settings,mode); std::getline(settings,dump);
     if(!mode.empty()&&mode.back()=='\r') mode.pop_back();
     if(!dump.empty()&&dump.back()=='\r') dump.pop_back();
-    if(mode!="boot"&&mode!="imports") {
+    if(mode=="memory") {
+        char *args[]={const_cast<char *>("gow3-uwp"),const_cast<char *>("--memory-selftest")};
+        int result=gow3_probe_main(2,args);
+        std::printf("Memory contract self-test returned %d\n",result); finished=true; return;
+    }
+    if(mode!="boot"&&mode!="imports"&&mode!="storage") {
         std::puts("READY: upload run.txt (boot or imports on line 1, dump folder on line 2), then relaunch."); finished=true; return;
     }
     if(dump.empty()) { std::puts("STOP: dump folder missing from run.txt"); finished=true; return; }
+    if(mode=="storage") {
+        std::string paths[]={dump.substr(0,3),dump.substr(0,dump.find_last_of("\\/")),dump};
+        for(auto const& path:paths) {
+            WIN32_FIND_DATAA entry{};
+            HANDLE search=gow3_uwp_find((path+"\\*").c_str(),&entry);
+            if(search==INVALID_HANDLE_VALUE) { std::printf("List %s: error %lu\n",path.c_str(),GetLastError()); continue; }
+            std::printf("List %s:\n",path.c_str());
+            unsigned count=0;
+            do { std::printf("  %s%s\n",entry.cFileName,entry.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY ? "/" : ""); }
+            while(++count<24&&gow3_uwp_find_next(search,&entry));
+            FindClose(search);
+        }
+    }
     std::string dump_eboot=dump+"\\eboot.bin";
     FILE *dump_file=gow3_uwp_fopen(dump_eboot.c_str(),"rb");
+    DWORD dump_error=dump_file ? 0 : GetLastError();
     std::printf("External dump eboot.bin readable: %s\n",dump_file ? "yes" : "no (only packaged-code initialization can be tested)");
+    if(!dump_file) std::printf("External dump open error: %lu\n",dump_error);
     if(dump_file) std::fclose(dump_file);
+    if(mode=="storage") {
+        auto name=winrt::to_hstring(dump_eboot);
+        HANDLE strict=CreateFile2FromAppW(name.c_str(),GENERIC_READ,FILE_SHARE_READ,OPEN_EXISTING,nullptr);
+        DWORD strict_error=strict==INVALID_HANDLE_VALUE ? GetLastError() : 0;
+        std::printf("Native read-only open, default parameters: %s (error %lu)\n",strict==INVALID_HANDLE_VALUE ? "failed" : "PASS",strict_error);
+        if(strict!=INVALID_HANDLE_VALUE) CloseHandle(strict);
+        try {
+            auto file=winrt::Windows::Storage::StorageFile::GetFileFromPathAsync(name).get();
+            std::printf("WinRT file lookup: PASS (%s)\n",winrt::to_string(file.Name()).c_str());
+        } catch(winrt::hresult_error const& error) {
+            std::printf("WinRT file lookup: 0x%08x %s\n",static_cast<unsigned>(error.code()),winrt::to_string(error.message()).c_str());
+        }
+        finished=true; return;
+    }
     std::string package=winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
     std::string boot=package+"\\Prepared\\boot-linked.bin";
     std::string content=package+"\\Prepared\\content.bin";

@@ -47,7 +47,7 @@ static IsaTable *isa_table; /* rewritten sites (--isa-rewrite); the fault handle
 static void isa_report_hook(void) { isa_rewrite_report(isa_table, stdout); }
 int vulkan_smoke(void);
 
-static void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
+static _Noreturn void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
 static uint64_t read64(FILE *f) {
     unsigned char b[8];
     if (fread(b, 1, 8, f) != 8) fail("truncated boot file");
@@ -180,6 +180,9 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     if (code==EXCEPTION_ACCESS_VIOLATION && record->NumberParameters>=2) {
         /* GPU page tracking (write-protected guest pages) is resolved first. */
         if (gpu_enabled && gow3gpu_handle_fault(info,(void *)record->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;
+#ifdef GOW3_UWP
+        if (runtime_memory_handle_commit_fault((uintptr_t)record->ExceptionInformation[1],(int)record->ExceptionInformation[0])) return EXCEPTION_CONTINUE_EXECUTION;
+#endif
         if (runtime_fault_recover) {
             /* A speculative guest memory read (GPU draw preparation) faulted: the thread resumes
              * in gow3_longjmp, outside the exception dispatcher, back at its recovery point. */
@@ -620,6 +623,12 @@ int gow3_probe_main(int argc, char **argv) {
 int main(int argc, char **argv) {
 #endif
     setvbuf(stdout, NULL, _IONBF, 0);
+#ifdef GOW3_UWP
+    if (argc==2 && !strcmp(argv[1],"--memory-selftest")) {
+        AddVectoredExceptionHandler(1,vectored_fault);
+        return runtime_memory_selftest();
+    }
+#endif
 #ifndef _WIN32
     /* Keep host heap objects handed to the guest (thread handles, TLS) in the
        non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */

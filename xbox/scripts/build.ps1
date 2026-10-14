@@ -5,6 +5,11 @@ $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $repo=Split-Path $root -Parent
 $local=Join-Path $root '.local'
+foreach($process in @(Get-Process -Name gow3_uwp -ErrorAction SilentlyContinue)) {
+    if($process.Path -eq (Join-Path $local 'build/layout/gow3_uwp.exe')) {
+        Stop-Process -Id $process.Id; $process.WaitForExit(5000) | Out-Null
+    }
+}
 $config=Get-Content -LiteralPath (Join-Path $local 'settings.json') -Raw | ConvertFrom-Json
 if($Prepare) {
     $prepared=Join-Path $local 'prepared'
@@ -20,5 +25,5 @@ $build=Join-Path $local 'build'
 & cmake -S $root -B $build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=RelWithDebInfo
 if($LASTEXITCODE) { throw 'UWP configure failed' }
 & cmake --build $build --parallel 4 *> (Join-Path $local 'build.log')
-if($LASTEXITCODE) { Select-String -LiteralPath (Join-Path $local 'build.log') -Pattern 'error:|error LNK|undefined symbol|fatal error' | Select-Object -First 25 | ForEach-Object { $_.Line }; throw 'UWP build failed; details in xbox/.local/build.log' }
+if($LASTEXITCODE) { Get-Content (Join-Path $local 'build.log') -Tail 35; throw 'UWP build failed; details in xbox/.local/build.log' }
 Write-Output 'UWP loader built; logs and layout are in xbox/.local.'
