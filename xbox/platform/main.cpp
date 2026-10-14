@@ -27,6 +27,7 @@ static std::atomic<bool> finished{false};
 static std::atomic<bool> game_mode{false};
 #ifdef GOW3_BUILD_GRAPHICS
 #include "../graphics/present_bridge.h"
+#include "../graphics/overlay.h"
 static winrt::agile_ref<winrt::Windows::UI::Core::CoreWindow> core_window;
 extern "C" IUnknown* gow3_uwp_core_window() {
     auto window=core_window.get();
@@ -146,7 +147,6 @@ static void loader() {
     _putenv_s("GOW3_CONFIG",(user+"\\graphics.cfg").c_str());
     _putenv_s("GOW3_PAD_FILE",(winrt::to_string(local)+"\\controls.txt").c_str());
     _putenv_s("GOW3_UPSCALER","off");
-    _putenv_s("GOW3_AUDIO","none");
     if(!std::getenv("GOW3_NO_MSAA")) _putenv_s("GOW3_NO_MSAA","1");
     _putenv_s("GOW3_DRAW_PIPE","1");
     _putenv_s("GOW3_VK_RECORD_THREAD","0");
@@ -155,7 +155,7 @@ static void loader() {
     _putenv_s("GOW3_ASYNC_SHADERS","0");
     _putenv_s("GOW3_PIPELINE_CACHE","0");
     std::puts("UWP renderer baseline: ordered draw worker, synchronous copies and shader selection");
-    std::puts("Running the existing loader and runtime; audio output disabled for this graphics port.");
+    std::puts("Running the existing loader and runtime with native UWP audio output.");
     std::vector<std::string> arguments={"gow3-uwp",boot};
 #ifdef GOW3_LINK_RENDERER
     if(mode!="boot") arguments.push_back("--cpu-only");
@@ -194,6 +194,13 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
         window.VisibilityChanged([](auto const&,auto const& event) {
             std::printf("UWP lifecycle: visible=%u\n",unsigned(event.Visible())); std::fflush(stdout);
         });
+#ifdef GOW3_LINK_RENDERER
+        window.KeyDown([](auto const&,auto const& event) {
+            if(event.VirtualKey()==winrt::Windows::System::VirtualKey::F3&&!event.KeyStatus().WasKeyDown) {
+                event.Handled(true);Gow3Uwp::Overlay::Toggle();
+            }
+        });
+#endif
 #ifdef GOW3_BUILD_GRAPHICS
         core_window=winrt::agile_ref(value);
 #endif

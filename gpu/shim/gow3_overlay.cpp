@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gow3_overlay.h"
+#ifdef GOW3_UWP
+#include "../../xbox/graphics/overlay.h"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -842,7 +845,11 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
             auto& loader=*static_cast<LoaderContext*>(user);
             auto proc=VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(loader.device,name);
             if(!proc) proc=VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr(loader.instance,name);
-            if(!proc) std::fprintf(stderr,"Overlay: Vulkan function unavailable: %s\n",name);
+            if(!proc
+#ifdef GOW3_UWP
+                &&!std::strstr(name,"Surface")&&!std::strstr(name,"Swapchain")
+#endif
+            ) std::fprintf(stderr,"Overlay: Vulkan function unavailable: %s\n",name);
             return proc;
         },
         &loader);
@@ -1103,6 +1110,9 @@ void SetLoading(bool active, u32 done, u32 total) {
 bool Visible() {
     const auto& s = Gow3Settings::Get();
     return initialized && (loading || background_total || menu_open || text_entry_active || choice_active ||
+#ifdef GOW3_UWP
+                           Gow3Uwp::Overlay::Visible() ||
+#endif
                            choice_retiring || s.show_fps ||
                            (s.actor_watch_supported && s.enemy_health_bar));
 }
@@ -1163,6 +1173,9 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     UpdateChoiceTextures();
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
+#ifdef GOW3_UWP
+    Gow3Uwp::Overlay::Render();
+#endif
     if (loading) {
         LoadingScreen();
     }

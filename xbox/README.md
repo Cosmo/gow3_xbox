@@ -147,7 +147,14 @@ New Game and difficulty selection. Single-sample rendering fixes the menu's
 striped depth corruption and is the UWP default (`GOW3_NO_MSAA=0` restores MSAA).
 Series X passes the narrow-buffer detiler after the Dozen compiler fix, reaches
 the opening movie, and has verified TV output for the logos and opening movie. Playable
-gameplay verification remains pending. Audio output remains silent.
+gameplay verification remains pending. Series X reached the opening scene on Gaia,
+then failed a guest page commit with error 1455. Iteration has returned to desktop UWP.
+Desktop audio output is verified with XAudio2; console audio is not yet retested.
+
+The initial Kyty-style performance panel shows FPS, frame time history, process CPU
+usage and total app RAM usage/budget. View + Menu + both triggers toggles it on
+release, consuming the chord while held; F3 toggles it on desktop. The panel is
+visible by default. FPS counts newly presented game frames, excluding reused frames.
 
 The host handles UWP `BackRequested`, matching Kyty's game page, so Xbox B can
 remain the guest Circle button without invoking system back navigation. Physical
@@ -165,7 +172,8 @@ All optional upscaling and RCAS are disabled; the console's FSR1 shader failed d
 startup. The native CoreWindow bridge handles presentation. The UWP page-fault handler
 commits new pages before asking GPU tracking to resolve their protection: the opposite
 order retried the game's first heap write indefinitely. WinRT gamepad input and vibration
-are connected, but no controller was attached during these runs. Audio output is silent.
+are connected. XAudio2 source voices preserve the runtime's steady buffer pacing and
+stereo downmix; `GOW3_AUDIO=none` remains available for silent diagnostics.
 The optional ImGui overlay stays disabled when its Vulkan loader lacks required functions.
 
 PC startup uses an ordered draw worker and waits for buffer initialization before

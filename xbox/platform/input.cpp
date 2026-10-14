@@ -1,4 +1,5 @@
 #include "input.h"
+#include "../graphics/overlay.h"
 #include <windows.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Gaming.Input.h>
@@ -20,6 +21,12 @@ extern "C" int gow3_uwp_gamepad(uint32_t* buttons,uint8_t axes[6]) {
         if(!pads.Size()) return 0;
         auto reading=pads.GetAt(0).GetCurrentReading();
         using B=winrt::Windows::Gaming::Input::GamepadButtons;
+        if(Gow3Uwp::Overlay::ControllerChord((reading.Buttons&B::View)!=B::None,
+            (reading.Buttons&B::Menu)!=B::None,reading.LeftTrigger,reading.RightTrigger)) {
+            *buttons=0;
+            axes[0]=axes[1]=axes[2]=axes[3]=128;axes[4]=axes[5]=0;
+            return 1;
+        }
         struct Mapping {B host;uint32_t guest;};
         constexpr Mapping map[]={
             {B::A,0x4000},{B::B,0x2000},{B::X,0x8000},{B::Y,0x1000},

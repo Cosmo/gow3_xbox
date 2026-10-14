@@ -14,6 +14,18 @@
 #include <pthread.h>
 #include <time.h>
 #include <SDL3/SDL.h>
+#ifdef GOW3_UWP
+#include "audio.h"
+#define HostAudioStream Gow3UwpAudioStream
+#define AudioQueued gow3_uwp_audio_queued
+#define AudioPut gow3_uwp_audio_put
+#define AudioDestroy gow3_uwp_audio_close
+#else
+#define HostAudioStream SDL_AudioStream
+#define AudioQueued SDL_GetAudioStreamQueued
+#define AudioPut SDL_PutAudioStreamData
+#define AudioDestroy SDL_DestroyAudioStream
+#endif
 
 #define PORTS 25
 #define ERR_NOT_OPENED ((int32_t)0x80260001)
@@ -32,7 +44,7 @@
 typedef struct {
     int used, type, channels, is_float, frames, sample_bytes, std_layout, downmix;
     int32_t volume[8];
-    SDL_AudioStream *stream;
+    HostAudioStream *stream;
     uint64_t next_deadline_ns; /* next return of sceAudioOutOutput */
     int64_t adjust_ns; int window_min, window_count; /* queue level control */
     uint64_t last_output_us;
@@ -63,8 +75,13 @@ static void sleep_until(uint64_t deadline) {
 static int sdl_audio(void) {
     if (sdl_ready<0) {
         const char *mode=getenv("GOW3_AUDIO");
+#ifdef GOW3_UWP
+        sdl_ready=(!mode||strcmp(mode,"none"))&&gow3_uwp_audio_init();
+        printf("Runtime: audio backend %s\n",sdl_ready ? "XAudio2" : "timer (silent)");
+#else
         sdl_ready = (!mode || strcmp(mode,"none")) && SDL_InitSubSystem(SDL_INIT_AUDIO);
         printf("Runtime: audio backend %s\n", sdl_ready ? SDL_GetCurrentAudioDriver() : "timer (silent)");
+#endif
     }
     return sdl_ready;
 }
@@ -136,6 +153,10 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
     p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
     for (int c=0;c<8;++c) p->volume[c]=VOLUME_0DB;
     if (sdl_audio()) {
+#ifdef GOW3_UWP
+        p->downmix=p->channels==8&&gow3_uwp_audio_channels()==2;
+        p->stream=gow3_uwp_audio_open(p->downmix ? 2 : p->channels,p->is_float);
+#else
         SDL_AudioSpec device; int device_frames;
         p->downmix=p->channels==8 && SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&device,&device_frames)
                    && device.channels==2;
@@ -143,6 +164,7 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
         p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
         if (p->stream) SDL_ResumeAudioStreamDevice(p->stream);
         else fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
+#endif
     }
     p->stats=getenv("GOW3_AUDIO_STATS")!=NULL;
     const char *dump=getenv("GOW3_AUDIO_DUMP");
@@ -163,7 +185,7 @@ static ABI int32_t audio_close(int32_t handle) {
     Port *p=port_of(handle,&error);
     if (p) {
         pthread_mutex_lock(&p->lock);
-        if (p->stream) SDL_DestroyAudioStream(p->stream);
+        if (p->stream) AudioDestroy(p->stream);
         if (p->dump) fclose(p->dump);
         p->dump=NULL;
         p->stream=NULL; p->used=0;
@@ -201,7 +223,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
             else if (now-p->stat_last_ns>p->stat_max_gap_ns) p->stat_max_gap_ns=now-p->stat_last_ns;
             p->stat_last_ns=now; ++p->stat_buffers;
             if (p->stream) {
-                int queued=SDL_GetAudioStreamQueued(p->stream);
+                int queued=AudioQueued(p->stream);
                 if (queued<p->stat_min_queued) p->stat_min_queued=queued;
                 if (queued==0) ++p->stat_starved;
             }
@@ -221,10 +243,10 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
         if (p->stream) {
             /* The device drains the queue in quanta (21 ms on PipeWire), so the level
                is a sawtooth: its minimum over ~32 buffers is what gets controlled. */
-            int low=2*(int)bytes, queued=SDL_GetAudioStreamQueued(p->stream);
+            int low=2*(int)bytes, queued=AudioQueued(p->stream);
             if (queued<(int)bytes) {
                 static const unsigned char silence[2048*8*4];
-                SDL_PutAudioStreamData(p->stream,silence,low-queued<(int)bytes ? low-queued : (int)bytes);
+                AudioPut(p->stream,silence,low-queued<(int)bytes ? low-queued : (int)bytes);
                 queued=low;
             }
             if (!p->window_count || queued<p->window_min) p->window_min=queued;
@@ -233,7 +255,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
                 p->window_count=0;
             }
             p->next_deadline_ns+=(uint64_t)p->adjust_ns;
-            SDL_PutAudioStreamData(p->stream,converted,(int)bytes);
+            AudioPut(p->stream,converted,(int)bytes);
         }
         ++buffers_out;
     }

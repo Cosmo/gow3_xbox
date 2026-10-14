@@ -8,6 +8,7 @@
 #include "common/singleton.h"
 #ifdef GOW3_UWP
 #include <SDL3/SDL_surface.h>
+#include "overlay.h"
 #endif
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
@@ -697,6 +698,9 @@ void Presenter::PresentLoadingFrame() {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
+#ifdef GOW3_UWP
+    if(is_game_frame&&!is_reusing_frame) Gow3Uwp::Overlay::Presented();
+#endif
     // Free the frame for reuse
     const auto free_frame = [&] {
         if (!is_reusing_frame) {
@@ -744,6 +748,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
 
 #ifdef GOW3_UWP
     std::unique_ptr<VideoCore::UniqueBuffer> capture_buffer;
+    const auto capture_extent=swapchain.GetExtent();
     VmaAllocationInfo capture_allocation{};
     static u64 capture_index=0;
     static auto last_capture=std::chrono::steady_clock::time_point{};
@@ -756,7 +761,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         last_capture=capture_time;
         ++capture_index;
         capture_buffer=std::make_unique<VideoCore::UniqueBuffer>(instance.GetDevice(),instance.GetAllocator());
-        vk::BufferCreateInfo buffer_info{.size=u64(frame->width)*frame->height*4,
+        vk::BufferCreateInfo buffer_info{.size=u64(capture_extent.width)*capture_extent.height*4,
             .usage=vk::BufferUsageFlagBits::eTransferDst,.sharingMode=vk::SharingMode::eExclusive};
         capture_buffer->Create(buffer_info,VideoCore::MemoryType::HostCached,&capture_allocation);
     }
@@ -815,13 +820,6 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
                          vk::ImageLayout::eTransferDstOptimal,
                          MakeImageBlitFit(frame->width, frame->height, extent.width, extent.height),
                          vk::Filter::eLinear);
-#ifdef GOW3_UWP
-        if(capture_buffer) {
-            const vk::BufferImageCopy copy{.imageSubresource={vk::ImageAspectFlagBits::eColor,0,0,1},
-                .imageExtent={frame->width,frame->height,1}};
-            cmdbuf.copyImageToBuffer(frame->image,vk::ImageLayout::eTransferSrcOptimal,capture_buffer->buffer,copy);
-        }
-#endif
         // gow3: the settings menu / FPS counter over the frame, at display resolution.
         const bool overlay = Gow3Overlay::Visible();
         const std::array post_barriers{
@@ -868,6 +866,18 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
                                    vk::PipelineStageFlagBits::eBottomOfPipe,
                                    vk::DependencyFlagBits::eByRegion, {}, {}, to_present);
         }
+#ifdef GOW3_UWP
+        if(capture_buffer) {
+            const vk::MemoryBarrier capture_ready{
+                .srcAccessMask=vk::AccessFlagBits::eMemoryWrite,
+                .dstAccessMask=vk::AccessFlagBits::eTransferRead};
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,
+                {},capture_ready,{},{});
+            const vk::BufferImageCopy copy{.imageSubresource={vk::ImageAspectFlagBits::eColor,0,0,1},
+                .imageExtent={capture_extent.width,capture_extent.height,1}};
+            cmdbuf.copyImageToBuffer(swapchain_image,Swapchain::PresentLayout(),capture_buffer->buffer,copy);
+        }
+#endif
     }
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
         cmdbuf.endDebugUtilsLabelEXT();
@@ -896,8 +906,8 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         vmaInvalidateAllocation(instance.GetAllocator(),capture_buffer->allocation,0,VK_WHOLE_SIZE);
         if(const char* user=std::getenv("GOW3_GPU_USER_DIR")) {
             const std::string path=std::string(user)+"/uwp-frame.bmp";
-            if(auto surface=SDL_CreateSurfaceFrom(frame->width,frame->height,SDL_PIXELFORMAT_RGBA32,
-                capture_allocation.pMappedData,frame->width*4)) {
+            if(auto surface=SDL_CreateSurfaceFrom(capture_extent.width,capture_extent.height,SDL_PIXELFORMAT_RGBA32,
+                capture_allocation.pMappedData,capture_extent.width*4)) {
                 if(SDL_SaveBMP(surface,path.c_str()))
                     std::printf("Captured UWP frame %llu: %s\n",capture_index,path.c_str());
                 if(capture_index<=32) {
