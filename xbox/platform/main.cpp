@@ -175,9 +175,25 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
     bool closed=false;
     void Initialize(winrt::Windows::ApplicationModel::Core::CoreApplicationView const& app) {
         app.Activated([this](auto const&,auto const&) { window.Activate(); });
+        winrt::Windows::ApplicationModel::Core::CoreApplication::Suspending([](auto const&,auto const&) {
+            std::printf("UWP lifecycle: suspending; memory=%llu MiB, limit=%llu MiB\n",
+                winrt::Windows::System::MemoryManager::AppMemoryUsage()>>20,
+                winrt::Windows::System::MemoryManager::AppMemoryUsageLimit()>>20);
+            std::fflush(stdout);
+        });
+        winrt::Windows::ApplicationModel::Core::CoreApplication::Resuming([](auto const&,auto const&) {
+            std::puts("UWP lifecycle: resuming"); std::fflush(stdout);
+        });
     }
     void SetWindow(winrt::Windows::UI::Core::CoreWindow const& value) {
         window=value; window.Closed([this](auto const&,auto const&) { closed=true; });
+        winrt::Windows::UI::Core::SystemNavigationManager::GetForCurrentView().BackRequested(
+            [](auto const&,winrt::Windows::UI::Core::BackRequestedEventArgs const& event) {
+                event.Handled(true);
+            });
+        window.VisibilityChanged([](auto const&,auto const& event) {
+            std::printf("UWP lifecycle: visible=%u\n",unsigned(event.Visible())); std::fflush(stdout);
+        });
 #ifdef GOW3_BUILD_GRAPHICS
         core_window=winrt::agile_ref(value);
 #endif
@@ -191,7 +207,20 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
             std::fflush(nullptr);
             std::fclose(stdout); std::fclose(stderr);
         }).detach();
-        std::thread([] { Sleep(30000); if(!finished.load()&&!game_mode.load()) { std::fputs("STOP: 30 second milestone watchdog\n",stderr); std::fflush(nullptr); ExitProcess(124); } }).detach();
+        std::thread([] {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            for(unsigned sample=0;sample<24&&!finished.load();++sample) {
+                Sleep(5000);
+                std::printf("UWP startup memory: %llu/%llu MiB, level=%u\n",
+                    winrt::Windows::System::MemoryManager::AppMemoryUsage()>>20,
+                    winrt::Windows::System::MemoryManager::AppMemoryUsageLimit()>>20,
+                    unsigned(winrt::Windows::System::MemoryManager::AppMemoryUsageLevel()));
+                std::fflush(stdout);
+                if(sample==5&&!finished.load()&&!game_mode.load()) {
+                    std::fputs("STOP: 30 second milestone watchdog\n",stderr); std::fflush(nullptr); ExitProcess(124);
+                }
+            }
+        }).detach();
         while(!closed) window.Dispatcher().ProcessEvents(winrt::Windows::UI::Core::CoreProcessEventsOption::ProcessOneAndAllPending);
     }
     void Uninitialize() {}

@@ -146,8 +146,13 @@ the opening movie and the 3D main menu. Scripted Cross input advances setup,
 New Game and difficulty selection. Single-sample rendering fixes the menu's
 striped depth corruption and is the UWP default (`GOW3_NO_MSAA=0` restores MSAA).
 Series X passes the narrow-buffer detiler after the Dozen compiler fix, reaches
-the opening movie, and has verified TV output for the startup logos. Playable
+the opening movie, and has verified TV output for the logos and opening movie. Playable
 gameplay verification remains pending. Audio output remains silent.
+
+The host handles UWP `BackRequested`, matching Kyty's game page, so Xbox B can
+remain the guest Circle button without invoking system back navigation. Physical
+B-button verification is pending. Visibility, suspension and resume events are
+logged; startup memory samples are bounded to the first two minutes.
 
 UWP uses ordinary GPU buffers in place of sparse arenas. Shader constant-memory reads
 use a logical page table and an array of ordinary buffer descriptors instead of Vulkan
