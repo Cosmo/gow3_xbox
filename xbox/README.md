@@ -141,7 +141,10 @@ The full guest graphics services, controller APIs, silent audio timing, ATRAC9, 
 video decoders are linked into the UWP executable. PC and Series X runs complete libc
 and Fios initialization, enter the game, hide its system splash screen and start the
 intro loader, audio driver and streaming threads. Package API validation passes.
-There is **no game-rendered picture or playable gameplay yet**.
+The current PC run renders the Sony and Santa Monica logos, the brightness setup
+screen and the opening movie. Scripted Cross input advances brightness setup.
+The user also reported gameplay in an earlier PC UWP window; that needs a repeat
+with captured frames before console testing resumes. Audio output remains silent.
 
 UWP uses ordinary GPU buffers in place of sparse arenas. Shader constant-memory reads
 use a logical page table and an array of ordinary buffer descriptors instead of Vulkan
@@ -157,11 +160,19 @@ order retried the game's first heap write indefinitely. WinRT gamepad input and 
 are connected, but no controller was attached during these runs. Audio output is silent.
 The optional ImGui overlay stays disabled when its Vulkan loader lacks required functions.
 
-Current stops: the PC intro polls a GPU completion value; Series X faults inside
-`umd12ddi_arden.dll` at the initial graphics stage. These are retained diagnostic runs,
-not successful gameplay tests. Shader dumps and logs remain private in `.local/` or the
+PC startup uses an ordered draw worker and waits for buffer initialization before
+guest draws. Rectangles and quads expand through geometry shaders; compressed
+textures use buffer uploads, and image views stay within their RGBA/BGRA family.
+The Dozen fork removes unused SSBO declarations before descriptor remapping,
+avoiding rejected root signatures from the unused clip-plane buffer.
+
+PC D3D12 diagnostics still report multisample and resource-state mismatches during
+later draws. The last Series X run preceded these PC fixes; console verification
+is pending. Shader dumps and logs remain private in `.local/` or the
 app's LocalState. `graphics-debug.txt` accepts `GOW3_DUMP_SHADERS`, `DZN_DEBUG`,
-`DZN_MAX_SHADER_MODEL` and `DZN_MAX_D3D12_OPTIONS`; it is optional and never packaged.
+`DZN_MAX_SHADER_MODEL`, `DZN_MAX_D3D12_OPTIONS` and `GOW3_UWP_CAPTURE`; it is optional
+and never packaged. Capture saves the latest frame and a bounded 32-image contact
+sheet, sampled every five seconds, under `LocalState/user/`.
 Dozen's separate static CRT writes `LocalState/dozen.log`, while the app writes its own
 loader and error logs. Logs can be downloaded while the app is running.
 

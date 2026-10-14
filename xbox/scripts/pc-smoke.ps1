@@ -19,7 +19,7 @@ if($Isolated) {
     $Register=$true
 }
 foreach($process in @(Get-Process | Where-Object ProcessName -Like 'gow3_uwp*')) {
-    if($process.Path -eq (Join-Path $layout 'gow3_uwp.exe')) { Stop-Process -Id $process.Id; $process.WaitForExit(5000) | Out-Null }
+    if($process.Path -eq (Join-Path $layout 'gow3_uwp.exe')) { Stop-Process -Id $process.Id -ErrorAction SilentlyContinue; $process.WaitForExit(5000) | Out-Null }
 }
 if($Register) { Add-AppxPackage -Register (Join-Path $layout 'AppxManifest.xml') -ForceApplicationShutdown }
 $package=Get-AppxPackage -Name $packageName
@@ -48,8 +48,24 @@ public static class Gow3Activation {
         return pid;
     }
 }
+[ComImport, Guid("F27C3930-8029-4AD1-94E3-3DBA417810C1"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IGow3PackageDebug {
+    [PreserveSig] int EnableDebugging([MarshalAs(UnmanagedType.LPWStr)] string package,IntPtr debugger,IntPtr environment);
+    [PreserveSig] int DisableDebugging([MarshalAs(UnmanagedType.LPWStr)] string package);
+    [PreserveSig] int Suspend([MarshalAs(UnmanagedType.LPWStr)] string package);
+    [PreserveSig] int Resume([MarshalAs(UnmanagedType.LPWStr)] string package);
+}
+public static class Gow3PackageDebug {
+    public static void Enable(string package) {
+        var manager=(IGow3PackageDebug)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("B1AEC16F-2383-4852-B0E9-8F0B1DC66B4D")));
+        try {
+            Marshal.ThrowExceptionForHR(manager.EnableDebugging(package,IntPtr.Zero,IntPtr.Zero));
+        } finally { Marshal.ReleaseComObject(manager); }
+    }
+}
 '@
 }
+[Gow3PackageDebug]::Enable($package.PackageFullName)
 $started=[DateTime]::UtcNow
 $pidValue=[Gow3Activation]::Run("$($package.PackageFamilyName)!App")
 Write-Output "PC UWP activated (process $pidValue), mode $Mode."

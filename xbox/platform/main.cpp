@@ -80,7 +80,7 @@ static void loader() {
         if(separator==std::string::npos) continue;
         auto key=line.substr(0,separator),value=line.substr(separator+1);
         if(key=="DZN_DEBUG"||key=="DZN_MAX_SHADER_MODEL"||key=="DZN_MAX_D3D12_OPTIONS"||
-           key=="GOW3_DUMP_SHADERS") {
+           key=="GOW3_DUMP_SHADERS"||key=="GOW3_UWP_CAPTURE") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }
@@ -147,6 +147,13 @@ static void loader() {
     _putenv_s("GOW3_PAD_FILE",(winrt::to_string(local)+"\\controls.txt").c_str());
     _putenv_s("GOW3_UPSCALER","off");
     _putenv_s("GOW3_AUDIO","none");
+    _putenv_s("GOW3_DRAW_PIPE","1");
+    _putenv_s("GOW3_VK_RECORD_THREAD","0");
+    _putenv_s("GOW3_COPY_THREADS","0");
+    _putenv_s("GOW3_PREP_WORKERS","0");
+    _putenv_s("GOW3_ASYNC_SHADERS","0");
+    _putenv_s("GOW3_PIPELINE_CACHE","0");
+    std::puts("UWP renderer baseline: ordered draw worker, synchronous copies and shader selection");
     std::puts("Running the existing loader and runtime; audio output disabled for this graphics port.");
     std::vector<std::string> arguments={"gow3-uwp",boot};
 #ifdef GOW3_LINK_RENDERER

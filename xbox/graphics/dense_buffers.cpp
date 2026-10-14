@@ -16,6 +16,8 @@ void BufferCache::InitializeDenseBuffers() {
     runtime.FillBuffer(bda_pagetable_buffer.get(),0,pages*sizeof(u64),0);
     null_buffer=std::make_unique<Buffer>(instance,0,64_KB,MemoryType::DeviceLocal,"Read-only zero binding");
     runtime.FillBuffer(null_buffer.get(),0,64_KB,0);
+    runtime.FlushBarriers();
+    scheduler.Finish();
     std::printf("UWP buffer cache: ordinary buffers, %llu MiB pages, %u logical DMA views\n",arena_page_size>>20,DmaViewCount);
 }
 std::array<vk::DescriptorBufferInfo,BufferCache::DmaViewCount> BufferCache::GetDmaViews() const {

@@ -146,6 +146,11 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
     }
 
     usage_flags = ImageUsageFlags(instance, info);
+#ifdef GOW3_UWP
+    if(info.props.is_block&&!instance.IsBlockTexelViewSupported()) {
+        usage_flags &= ~vk::ImageUsageFlagBits::eStorage;
+    }
+#endif
     format_features = FormatFeatureFlags(usage_flags);
     if (info.props.is_depth) {
         aspect_mask = vk::ImageAspectFlagBits::eDepth;

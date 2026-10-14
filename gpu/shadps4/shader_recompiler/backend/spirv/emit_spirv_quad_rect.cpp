@@ -41,6 +41,55 @@ struct QuadRectListEmitter : public Sirit::Module {
                        static_cast<u32>(spv::BuiltIn::CullDistance));
     }
 
+    void EmitGeometry(bool quad) {
+        geometry_vertices=quad ? 4U : 3U;
+        DefineEntry(spv::ExecutionModel::Geometry);
+        const Id input_vec4=TypePointer(spv::StorageClass::Input,vec4_id);
+        const Id output_vec4=TypePointer(spv::StorageClass::Output,vec4_id);
+        std::array<Id,3> positions,weights,edges,equal;
+        Id corner=Int(0);
+        if(!quad) {
+            for(u32 i=0;i<3;++i) positions[i]=OpLoad(vec4_id,OpAccessChain(input_vec4,gl_in,Int(i),Int(0)));
+            for(u32 i=0;i<3;++i) {
+                const Id a=OpVectorShuffle(vec2_id,positions[i],positions[i],0,1);
+                const Id b=OpVectorShuffle(vec2_id,positions[(i+1)%3],positions[(i+1)%3],0,1);
+                equal[i]=OpFOrdEqual(bvec2_id,a,b);
+            }
+            for(u32 i=0;i<3;++i) {
+                const Id xy=OpLogicalAnd(bool_id,OpCompositeExtract(bool_id,equal[i],0),
+                    OpCompositeExtract(bool_id,equal[(i+2)%3],1));
+                const Id yx=OpLogicalAnd(bool_id,OpCompositeExtract(bool_id,equal[i],1),
+                    OpCompositeExtract(bool_id,equal[(i+2)%3],0));
+                edges[i]=OpLogicalOr(bool_id,xy,yx);
+                weights[i]=OpSelect(float_id,edges[i],float_min_one,float_one);
+            }
+            corner=OpSelect(int_id,edges[1],Int(1),OpSelect(int_id,edges[2],Int(2),Int(0)));
+        }
+        const auto interpolate=[&](Id a,Id b,Id c) {
+            return OpFAdd(vec4_id,OpVectorTimesScalar(vec4_id,a,weights[0]),
+                OpFAdd(vec4_id,OpVectorTimesScalar(vec4_id,b,weights[1]),OpVectorTimesScalar(vec4_id,c,weights[2])));
+        };
+        constexpr std::array<s32,4> quad_indices{1,2,0,3};
+        for(u32 vertex=0;vertex<4;++vertex) {
+            const Id index=quad ? Int(quad_indices[vertex]) : OpSMod(int_id,OpIAdd(int_id,corner,Int(vertex)),Int(3));
+            const Id position=!quad&&vertex==3 ? interpolate(positions[0],positions[1],positions[2])
+                : OpLoad(vec4_id,OpAccessChain(input_vec4,gl_in,index,Int(0)));
+            OpStore(OpAccessChain(output_vec4,gl_per_vertex,Int(0)),position);
+            for(u32 attribute=0;attribute<inputs.size();++attribute) {
+                Id value;
+                if(!quad&&vertex==3) {
+                    const Id a=OpLoad(vec4_id,OpAccessChain(input_vec4,inputs[attribute],Int(0)));
+                    const Id b=OpLoad(vec4_id,OpAccessChain(input_vec4,inputs[attribute],Int(1)));
+                    const Id c=OpLoad(vec4_id,OpAccessChain(input_vec4,inputs[attribute],Int(2)));
+                    value=interpolate(a,b,c);
+                } else value=OpLoad(vec4_id,OpAccessChain(input_vec4,inputs[attribute],index));
+                OpStore(outputs[attribute],value);
+            }
+            OpEmitVertex();
+        }
+        OpEndPrimitive();OpReturn();OpFunctionEnd();
+    }
+
     /// Emits tessellation control shader for interpolating the 4th vertex of rectange primitive
     void EmitRectListTCS() {
         DefineEntry(spv::ExecutionModel::TessellationControl);
@@ -219,10 +268,15 @@ private:
 
     void DefineEntry(spv::ExecutionModel model) {
         AddCapability(spv::Capability::Shader);
-        AddCapability(spv::Capability::Tessellation);
+        AddCapability(model==spv::ExecutionModel::Geometry ? spv::Capability::Geometry : spv::Capability::Tessellation);
         const Id void_function{TypeFunction(void_id)};
         main = OpFunction(void_id, spv::FunctionControlMask::MaskNone, void_function);
-        if (model == spv::ExecutionModel::TessellationControl) {
+        if(model==spv::ExecutionModel::Geometry) {
+            AddExecutionMode(main,geometry_vertices==3 ? spv::ExecutionMode::Triangles : spv::ExecutionMode::InputLinesAdjacency);
+            AddExecutionMode(main,spv::ExecutionMode::OutputTriangleStrip);
+            AddExecutionMode(main,spv::ExecutionMode::OutputVertices,4U);
+            AddExecutionMode(main,spv::ExecutionMode::Invocations,1U);
+        } else if (model == spv::ExecutionModel::TessellationControl) {
             AddExecutionMode(main, spv::ExecutionMode::OutputVertices, 4U);
         } else {
             AddExecutionMode(main, spv::ExecutionMode::Quads);
@@ -262,6 +316,7 @@ private:
                                                ? TypeArray(vec4_id, Int(4))
                                                : vec4_id));
             Decorate(outputs.back(), spv::Decoration::Location, input.param_index);
+            if(model==spv::ExecutionModel::Geometry&&input.is_flat) Decorate(outputs.back(),spv::Decoration::Flat);
         }
     }
 
@@ -273,9 +328,10 @@ private:
             gl_invocation_id = AddInput(int_id);
             Decorate(gl_invocation_id, spv::Decoration::BuiltIn, spv::BuiltIn::InvocationId);
         }
-        const Id gl_per_vertex_array{TypeArray(gl_per_vertex_type, Constant(uint_id, 32U))};
+        const u32 input_vertices=model==spv::ExecutionModel::Geometry ? geometry_vertices : 32U;
+        const Id gl_per_vertex_array{TypeArray(gl_per_vertex_type, Constant(uint_id, input_vertices))};
         gl_in = AddInput(gl_per_vertex_array);
-        const Id float_arr{TypeArray(vec4_id, Int(32))};
+        const Id float_arr{TypeArray(vec4_id, Int(input_vertices))};
         inputs.reserve(fs_info.num_inputs);
         for (int i = 0; i < fs_info.num_inputs; i++) {
             const auto& input = fs_info.inputs[i];
@@ -289,6 +345,7 @@ private:
 
 private:
     HwFragmentRuntimeInfo fs_info;
+    u32 geometry_vertices=3;
     Id main;
     Id void_id;
     Id bool_id;
@@ -330,6 +387,12 @@ std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type, const HwFragmentRunt
         break;
     case AuxShaderType::PassthroughTES:
         ctx.EmitPassthroughTES();
+        break;
+    case AuxShaderType::RectListGS:
+        ctx.EmitGeometry(false);
+        break;
+    case AuxShaderType::QuadListGS:
+        ctx.EmitGeometry(true);
         break;
     }
     return ctx.Assemble();

@@ -6,6 +6,9 @@
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/singleton.h"
+#ifdef GOW3_UWP
+#include <SDL3/SDL_surface.h>
+#endif
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "sdl_window.h"
@@ -137,7 +140,11 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
       swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
+#ifdef GOW3_UWP
+    const u32 num_images=std::max(3u,swapchain.GetImageCount());
+#else
     const u32 num_images = swapchain.GetImageCount();
+#endif
     const vk::Device device = instance.GetDevice();
 
     // Create presentation frames.
@@ -301,6 +308,7 @@ Frame* Presenter::PrepareLastFrame() {
     auto& scheduler = flip_scheduler;
     scheduler.EndRendering();
     const auto cmdbuf = scheduler.CommandBuffer();
+
 
     const auto frame_subresources = vk::ImageSubresourceRange{
         .aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -471,6 +479,20 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
                     vk::ImageLayout::eTransferSrcOptimal, image.info.size.width,
                     image.info.size.height, "display", frame_dump_index);
         }
+#ifdef GOW3_UWP
+        const auto base_format=image.info.pixel_format;
+        const bool rgba=base_format==vk::Format::eR8G8B8A8Unorm||base_format==vk::Format::eR8G8B8A8Srgb;
+        const bool bgra=base_format==vk::Format::eB8G8R8A8Unorm||base_format==vk::Format::eB8G8R8A8Srgb;
+        const bool requested_rgba=view_info.format==vk::Format::eR8G8B8A8Unorm||view_info.format==vk::Format::eR8G8B8A8Srgb;
+        const bool requested_bgra=view_info.format==vk::Format::eB8G8R8A8Unorm||view_info.format==vk::Format::eB8G8R8A8Srgb;
+        if((rgba&&requested_bgra)||(bgra&&requested_rgba)) {
+            const bool srgb=view_info.format==vk::Format::eR8G8B8A8Srgb||view_info.format==vk::Format::eB8G8R8A8Srgb;
+            view_info.format=rgba ? (srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm)
+                                  : (srgb ? vk::Format::eB8G8R8A8Srgb : vk::Format::eB8G8R8A8Unorm);
+            view_info.mapping.r=vk::ComponentSwizzle::eB;
+            view_info.mapping.b=vk::ComponentSwizzle::eR;
+        }
+#endif
         image_view = *image.FindView(view_info).image_view;
         image_size = vk::Extent2D{image.info.size.width, image.info.size.height};
         runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -720,6 +742,26 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     auto& scheduler = present_scheduler;
     const auto cmdbuf = scheduler.CommandBuffer();
 
+#ifdef GOW3_UWP
+    std::unique_ptr<VideoCore::UniqueBuffer> capture_buffer;
+    VmaAllocationInfo capture_allocation{};
+    static u64 capture_index=0;
+    static auto last_capture=std::chrono::steady_clock::time_point{};
+    const auto capture_time=std::chrono::steady_clock::now();
+    const char* capture_enabled=std::getenv("GOW3_UWP_CAPTURE");
+    const bool capture_frame=capture_enabled && capture_enabled[0]=='1' &&
+        is_game_frame && !is_reusing_frame &&
+        capture_time-last_capture>=std::chrono::seconds(5);
+    if(capture_frame) {
+        last_capture=capture_time;
+        ++capture_index;
+        capture_buffer=std::make_unique<VideoCore::UniqueBuffer>(instance.GetDevice(),instance.GetAllocator());
+        vk::BufferCreateInfo buffer_info{.size=u64(frame->width)*frame->height*4,
+            .usage=vk::BufferUsageFlagBits::eTransferDst,.sharingMode=vk::SharingMode::eExclusive};
+        capture_buffer->Create(buffer_info,VideoCore::MemoryType::HostCached,&capture_allocation);
+    }
+#endif
+
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
         cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{
             .pLabelName = "Present",
@@ -773,6 +815,13 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
                          vk::ImageLayout::eTransferDstOptimal,
                          MakeImageBlitFit(frame->width, frame->height, extent.width, extent.height),
                          vk::Filter::eLinear);
+#ifdef GOW3_UWP
+        if(capture_buffer) {
+            const vk::BufferImageCopy copy{.imageSubresource={vk::ImageAspectFlagBits::eColor,0,0,1},
+                .imageExtent={frame->width,frame->height,1}};
+            cmdbuf.copyImageToBuffer(frame->image,vk::ImageLayout::eTransferSrcOptimal,capture_buffer->buffer,copy);
+        }
+#endif
         // gow3: the settings menu / FPS counter over the frame, at display resolution.
         const bool overlay = Gow3Overlay::Visible();
         const std::array post_barriers{
@@ -841,6 +890,32 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         }
     }
 
+#ifdef GOW3_UWP
+    if(capture_buffer) {
+        scheduler.Finish();
+        vmaInvalidateAllocation(instance.GetAllocator(),capture_buffer->allocation,0,VK_WHOLE_SIZE);
+        if(const char* user=std::getenv("GOW3_GPU_USER_DIR")) {
+            const std::string path=std::string(user)+"/uwp-frame.bmp";
+            if(auto surface=SDL_CreateSurfaceFrom(frame->width,frame->height,SDL_PIXELFORMAT_RGBA32,
+                capture_allocation.pMappedData,frame->width*4)) {
+                if(SDL_SaveBMP(surface,path.c_str()))
+                    std::printf("Captured UWP frame %llu: %s\n",capture_index,path.c_str());
+                if(capture_index<=32) {
+                    static const auto sequence=std::unique_ptr<SDL_Surface,decltype(&SDL_DestroySurface)>(
+                        SDL_CreateSurface(1280,1440,SDL_PIXELFORMAT_RGBA32),SDL_DestroySurface);
+                    if(sequence) {
+                        const int tile=static_cast<int>(capture_index-1);
+                        SDL_Rect destination{(tile%4)*320,(tile/4)*180,320,180};
+                        SDL_SetSurfaceBlendMode(surface,SDL_BLENDMODE_NONE);
+                        SDL_BlitSurfaceScaled(surface,nullptr,sequence.get(),&destination,SDL_SCALEMODE_NEAREST);
+                        SDL_SaveBMP(sequence.get(),(std::string(user)+"/uwp-startup-sequence.bmp").c_str());
+                    }
+                }
+                SDL_DestroySurface(surface);
+            }
+        }
+    }
+#endif
     free_frame();
     if (!is_reusing_frame && is_game_frame) {
         DebugState.IncFlipFrameNum();

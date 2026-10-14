@@ -928,6 +928,11 @@ void Instance::CollectImageFormatInfo() {
     const auto block_texel_view_props =
         physical_device.getImageFormatProperties2(block_texel_view_info);
     supports_block_texel_view = block_texel_view_props.result == vk::Result::eSuccess;
+#ifdef GOW3_UWP
+    // Dozen's reported compressed storage views fail D3D12 resource allocation.
+    // Use the existing buffer upload path for compressed textures.
+    supports_block_texel_view = false;
+#endif
     LOG_INFO(Render_Vulkan, "Block Texel View support: {}",
              supports_block_texel_view ? "Yes" : "No");
 
