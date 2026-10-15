@@ -29,6 +29,9 @@ uintptr_t runtime_memory_resolve(const char *name);
 void runtime_memory_report(void);
 #ifdef GOW3_UWP
 int runtime_memory_handle_commit_fault(uintptr_t address,int access);
+int runtime_memory_handle_commit_fault_at(uintptr_t address,int access,int guest_code);
+void runtime_memory_start_paging(void);
+uint64_t runtime_memory_page_out(uint64_t bytes);
 int runtime_memory_selftest(void);
 #endif
 int runtime_memory_is_mapped(uintptr_t address, uint64_t size);

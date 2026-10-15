@@ -207,7 +207,11 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
 #ifdef GOW3_UWP
         /* A reserved UWP page must exist before GPU tracking can resolve its access.
          * Otherwise a successful GPU write-fault handler retries the untouched page. */
-        if (runtime_memory_handle_commit_fault((uintptr_t)record->ExceptionInformation[1],(int)record->ExceptionInformation[0])) return EXCEPTION_CONTINUE_EXECUTION;
+        uintptr_t fault_pc=(uintptr_t)info->ContextRecord->Rip;
+        int guest_code=image && fault_pc-(uintptr_t)image<0x20000000;
+        for(uint64_t m=0;m<module_count&&!guest_code;++m)
+            guest_code=fault_pc>=modules[m].base && fault_pc-modules[m].base<modules[m].size;
+        if (runtime_memory_handle_commit_fault_at((uintptr_t)record->ExceptionInformation[1],(int)record->ExceptionInformation[0],guest_code)) return EXCEPTION_CONTINUE_EXECUTION;
 #endif
         /* GPU page tracking resolves protection faults on committed guest pages. */
         if (gpu_enabled && gow3gpu_handle_fault(info,(void *)record->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;

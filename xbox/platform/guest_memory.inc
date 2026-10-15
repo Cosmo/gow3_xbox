@@ -1,8 +1,8 @@
 /* UWP host mappings. Physical pages are backed only when touched. Single mappings
  * use private memory; a live physical alias promotes that page to a small section.
  * Unmapped direct-page contents survive in a bounded-to-touched-pages snapshot. */
-typedef struct { uintptr_t owner; unsigned char *saved; HANDLE section; unsigned references; } UwpPhysical;
-typedef struct { uintptr_t address; uint64_t physical; int mapped, kind; int protection[4]; } UwpPage;
+typedef struct { uintptr_t owner; unsigned char *saved; HANDLE section; unsigned references; uint64_t hash; unsigned char pinned,disk,hash_valid; } UwpPhysical;
+typedef struct { uintptr_t address; uint64_t physical; int mapped, kind, pageable, split, committed; unsigned view_mask; int protection[4]; } UwpPage;
 static UwpPhysical *uwp_physical;
 static UwpPage *uwp_pages;
 static size_t uwp_count,uwp_capacity;
@@ -23,6 +23,7 @@ static void uwp_apply_protection(UwpPage *page) {
 static void uwp_fail(const char *what,uintptr_t address) {
     fprintf(stderr,"STOP: UWP %s at %p, error %lu\n",what,(void *)address,GetLastError()); exit(21);
 }
+#include "guest_swap.inc"
 static size_t uwp_index(uintptr_t address) {
     size_t lo=0,hi=uwp_count;
     while(lo<hi) { size_t mid=(lo+hi)/2; if(uwp_pages[mid].address<address) lo=mid+1; else hi=mid; }
@@ -73,23 +74,25 @@ static int uwp_reserve(uintptr_t address,uint64_t size) {
     return 0;
 }
 static int uwp_commit(UwpPage *page) {
+    if(page->kind==4||page->kind==3) return uwp_swap_page_in(page);
     if(page->kind!=1) return 0;
-    MEMORY_BASIC_INFORMATION info;
-    if(!VirtualQuery((void *)page->address,&info,sizeof(info))) return 0;
-    if(info.State==MEM_COMMIT) return 0;
-    if(!VirtualAllocFromApp((void *)page->address,PAGE,MEM_COMMIT,PAGE_READWRITE)) uwp_fail("commit-on-touch",page->address);
+    if(page->committed) return 0;
+    for(unsigned attempt=0;!VirtualAllocFromApp((void *)page->address,PAGE,MEM_COMMIT,PAGE_READWRITE);++attempt)
+        if(attempt==7 || !uwp_swap_page_out_locked(UINT64_C(16)<<20,page,1)) uwp_fail("commit-on-touch",page->address);
+    page->committed=1;
     UwpPhysical *physical=&uwp_physical[page->physical/PAGE];
     if(physical->saved) { memcpy((void *)page->address,physical->saved,PAGE); free(physical->saved); physical->saved=NULL; ++uwp_moves; }
     uwp_apply_protection(page);
     ++uwp_faults;
     return 1;
 }
-int runtime_memory_handle_commit_fault(uintptr_t address,int access) {
+int runtime_memory_handle_commit_fault_at(uintptr_t address,int access,int guest_code) {
     read_lock();
     AcquireSRWLockExclusive(&uwp_commit_lock);
     UwpPage *page=uwp_page(address);
     int handled=0;
-    if(page && page->mapped && page->kind==1) {
+    if(page && page->mapped && (page->kind==1||page->kind==3||page->kind==4)) {
+        if(guest_code) uwp_physical[page->physical/PAGE].pinned=1;
         unsigned index=(unsigned)((address-page->address)/4096);
         int wanted=page->protection[index];
         int permitted=access==1 ? (wanted&PROT_WRITE) : access==8 ? (wanted&PROT_EXEC) : (wanted&(PROT_READ|PROT_WRITE|PROT_EXEC));
@@ -115,6 +118,9 @@ int runtime_memory_handle_commit_fault(uintptr_t address,int access) {
     read_unlock();
     return handled;
 }
+int runtime_memory_handle_commit_fault(uintptr_t address,int access) {
+    return runtime_memory_handle_commit_fault_at(address,access,0);
+}
 static int uwp_detach(UwpPage *page,int preserve) {
     if(!page->mapped) return 0;
     UwpPhysical *physical=&uwp_physical[page->physical/PAGE];
@@ -128,6 +134,9 @@ static int uwp_detach(UwpPage *page,int preserve) {
             free(physical->saved); physical->saved=saved; ++uwp_snapshots;
         }
         if(!VirtualFree((void *)page->address,PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) uwp_fail("private page release",page->address);
+    } else if(page->kind==3) {
+        physical->hash_valid=0;
+        uwp_swap_unmap_view(page);
     } else if(page->kind==2) {
         if(!UnmapViewOfFile2(GetCurrentProcess(),(void *)page->address,MEM_PRESERVE_PLACEHOLDER)) uwp_fail("alias page unmap",page->address);
     }
@@ -136,7 +145,7 @@ static int uwp_detach(UwpPage *page,int preserve) {
         for(size_t i=0;i<uwp_count;++i) if(uwp_pages[i].mapped && &uwp_pages[i]!=page && uwp_pages[i].physical==page->physical) { physical->owner=uwp_pages[i].address; break; }
     }
     if(physical->references) --physical->references;
-    page->mapped=page->kind=0;
+    page->mapped=page->kind=page->committed=0;
     memset(page->protection,0,sizeof(page->protection));
     return 0;
 }
@@ -147,35 +156,52 @@ static int uwp_promote(UwpPhysical *physical,uint64_t offset) {
     UwpPage *owner=uwp_page(physical->owner);
     unsigned char data[16384]={0}; DWORD old;
     if(owner) {
-        uwp_commit(owner);
-        if(!VirtualProtectFromApp((void *)owner->address,PAGE,PAGE_READONLY,&old)) uwp_fail("alias promotion read",owner->address);
-        memcpy(data,(void *)owner->address,PAGE);
-        if(!VirtualFree((void *)owner->address,PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) uwp_fail("alias promotion release",owner->address);
+        if(owner->kind==3||owner->kind==4) {
+            memcpy(data,uwp_swap_bytes(owner->physical),PAGE);
+            if(owner->kind==3) uwp_swap_unmap_view(owner);
+        } else {
+            uwp_commit(owner);
+            if(!VirtualProtectFromApp((void *)owner->address,PAGE,PAGE_READONLY,&old)) uwp_fail("alias promotion read",owner->address);
+            memcpy(data,(void *)owner->address,PAGE);
+            if(!VirtualFree((void *)owner->address,PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) uwp_fail("alias promotion release",owner->address);
+        }
+        uwp_swap_coalesce(owner);
         if(!MapViewOfFile3FromApp(section,GetCurrentProcess(),(void *)owner->address,0,PAGE,MEM_REPLACE_PLACEHOLDER,PAGE_READWRITE,NULL,0)) uwp_fail("canonical alias map",owner->address);
         memcpy((void *)owner->address,data,PAGE);
         uwp_apply_protection(owner);
         owner->kind=2;
+        owner->committed=0;
     }
     physical->section=section;
+    if(physical->disk) { physical->disk=0; --uwp_swap_disk_pages; }
+    physical->hash_valid=0;
     (void)offset; ++uwp_aliases;
     return 0;
 }
 static int host_map(uintptr_t address,uint64_t size,int prot,int reserved,uint64_t offset) {
     if(uwp_reserve(address,size)) return -1;
+    int pageable=0;
+    if(size>=(UINT64_C(256)<<20) && offset<POOL_SIZE && !(prot&PROT_EXEC))
+        for(unsigned i=0;i<LIMIT;++i)
+            if(blocks[i].used && blocks[i].type==3 && blocks[i].start<=offset && offset-blocks[i].start<blocks[i].size) { pageable=1; break; }
     for(uint64_t n=0;n<size;n+=PAGE) {
         UwpPage *page=uwp_page(address+n);
         if(page->mapped) uwp_detach(page,1);
         if(reserved) continue;
         UwpPhysical *physical=&uwp_physical[(offset+n)/PAGE];
         if(physical->references && uwp_promote(physical,offset+n)) uwp_fail("alias section resource limit",page->address);
+        if(physical->section || !physical->disk) uwp_swap_coalesce(page);
         if(physical->section) {
             if(!MapViewOfFile3FromApp(physical->section,GetCurrentProcess(),(void *)page->address,0,PAGE,MEM_REPLACE_PLACEHOLDER,PAGE_READWRITE,NULL,0)) uwp_fail("physical alias map",page->address);
             page->kind=2;
+        } else if(physical->disk) {
+            page->kind=4;
+            uwp_swap_split(page);
         } else {
             if(!VirtualAlloc2FromApp(NULL,(void *)page->address,PAGE,MEM_RESERVE|MEM_REPLACE_PLACEHOLDER,PAGE_NOACCESS,NULL,0)) uwp_fail("private page reservation",page->address);
             page->kind=1;
         }
-        page->mapped=1; page->physical=offset+n;
+        page->mapped=1; page->physical=offset+n; page->pageable=pageable; page->committed=0;
         for(unsigned i=0;i<4;++i) page->protection[i]=prot;
         if(page->kind==2) uwp_apply_protection(page);
         if(!physical->owner) physical->owner=page->address;
@@ -192,6 +218,10 @@ static int host_protect(uintptr_t address,uint64_t size,int prot) {
     int result=0;
     for(uintptr_t at=address&~(uintptr_t)4095;at<address+size;at+=4096) {
         UwpPage *page=uwp_page(at); if(!page||!page->mapped) continue;
+        if(page->kind==3||page->kind==4) {
+            if(!uwp_swap_protect(page,(unsigned)((at-page->address)/4096),prot)) { result=-1; break; }
+            continue;
+        }
         MEMORY_BASIC_INFORMATION info; DWORD old;
         if(!VirtualQuery((void *)at,&info,sizeof(info))) { result=-1;break; }
         if(info.State==MEM_COMMIT && !VirtualProtectFromApp((void *)at,4096,win_prot(prot),&old)) { result=-1;break; }
@@ -207,6 +237,8 @@ static void host_discard(uint64_t offset,uint64_t size) {
         free(physical->saved); physical->saved=NULL;
         if(physical->section) { CloseHandle(physical->section); physical->section=NULL; }
         physical->owner=0; physical->references=0;
+        if(physical->disk) { physical->disk=0; --uwp_swap_disk_pages; }
+        physical->pinned=physical->hash_valid=0;
     }
 }
 static int uwp_backing_write(uintptr_t address,const void *source,uint64_t size) {
@@ -217,7 +249,10 @@ static int uwp_backing_write(uintptr_t address,const void *source,uint64_t size)
         if(!page||!page->mapped) { result=0; break; }
         uint64_t offset=address-page->address,n=PAGE-offset; if(n>size) n=size;
         UwpPhysical *physical=&uwp_physical[page->physical/PAGE];
-        if(physical->section) {
+        if(physical->disk && !physical->section) {
+            memcpy(uwp_swap_bytes(page->physical)+offset,source,n);
+            physical->hash_valid=0;
+        } else if(physical->section) {
             void *view=MapViewOfFile3FromApp(physical->section,GetCurrentProcess(),NULL,0,PAGE,0,PAGE_READWRITE,NULL,0);
             if(!view) { result=0; break; }
             memcpy((unsigned char *)view+offset,source,n); UnmapViewOfFile(view);
@@ -239,5 +274,6 @@ static int uwp_backing_write(uintptr_t address,const void *source,uint64_t size)
     return result;
 }
 static void uwp_memory_report(void) {
+    uwp_swap_report();
     printf("UWP memory: commit faults=%" PRIu64 ", promoted alias pages=%" PRIu64 ", snapshots=%" PRIu64 ", restored=%" PRIu64 ", virtual pages=%zu\n",uwp_faults,uwp_aliases,uwp_snapshots,uwp_moves,uwp_count);
 }

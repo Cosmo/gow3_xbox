@@ -15,6 +15,7 @@
 #ifdef GOW3_UWP
 extern "C" uint64_t gow3_uwp_app_memory_usage();
 extern "C" uint64_t gow3_uwp_app_memory_limit();
+extern "C" uint64_t runtime_memory_page_out(uint64_t bytes);
 #endif
 
 namespace VideoCore {
@@ -121,6 +122,12 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
     VkResult result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image,
                                      &allocation, &alloc_info);
 #ifdef GOW3_UWP
+    for(unsigned attempt=0;result==VK_ERROR_OUT_OF_DEVICE_MEMORY && attempt<4;++attempt) {
+        const auto released=runtime_memory_page_out(UINT64_C(64)<<20);
+        if(!released) break;
+        std::printf("UWP image allocation retry %u: swap released %llu MiB\n",attempt+1,released>>20);
+        result=vmaCreateImage(allocator,&image_ci_unsafe,&alloc_ci,&unsafe_image,&allocation,&alloc_info);
+    }
     if (result != VK_SUCCESS) {
         std::printf("UWP image allocation failed: %ux%ux%u layers=%u mips=%u samples=%u "
                     "format=%s app=%llu/%llu MiB result=%s\n",

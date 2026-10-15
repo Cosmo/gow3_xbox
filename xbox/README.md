@@ -242,7 +242,7 @@ layout if the primary PC package is stuck in servicing. Subsequent runs use
 another. Diagnostic modes close after collecting their logs; `boot` stays open for
 gameplay. Close gameplay when a capture or input test is finished.
 
-`pc-autostart.ps1 -Seconds 270` pulses A once per second in the Smoke package,
+`pc-autostart.ps1 -Seconds 270` alternates A and X every half second in the Smoke package,
 then releases scripted input. This passes the menus without manual input; the opening
 cinematic still takes several minutes. It uses the existing private `controls.txt`.
 
@@ -326,7 +326,7 @@ reclaimable images behind them.
 
 For desktop stress testing only, private `graphics-debug.txt` accepts
 `GOW3_GC_BUDGET_MB`. In UWP this lowers the collector's app budget without changing
-the OS limit or paging guest memory. Values below 1024 MiB or above 65536 MiB are
+the OS limit or the pager's budget. Values below 1024 MiB or above 65536 MiB are
 ignored, and the value cannot raise the real app limit. Remove the override after
 testing. A 4608 MiB stress run completed 236 seconds through opening combat with
 correct textures; samples from 120 seconds onward used 4149-4202 MiB app RAM and
@@ -337,3 +337,58 @@ Image allocation failures now log dimensions, format, layers, mip levels, sample
 count, app memory, and VMA heap budgets to `loader.log`. The later crash scene
 still requires validation; opening combat alone does not establish that the full
 level fits in memory.
+
+### Disk paging (15 October)
+
+`platform/guest_swap.inc` adapts the Xbox memory design from KytyPS5 commit
+`1303170`: a cached temporary LocalState file, memory-pressure headroom, pins for
+guest-code accesses, and retention of GPU page protections. The reference source
+was read from the archived Kyty repository; neither Kyty nor XboxResearch was
+modified. The GoW pager uses file-backed views for page-in, avoiding a copy into
+private memory that another reader could observe before restoration is complete.
+
+Paging is enabled by default in gameplay. `LocalState/gow3-swap.bin` is a single
+sparse temporary file, removed by Windows when the process closes. Its logical
+length covers the direct-memory pool; only saved content requires disk storage.
+The mapped working window is at most 64 MiB, plus one 64 KiB transfer view. File
+views use the individual 4 KiB GPU protections; no-access subpages remain absent
+until tracking permits access. Protected GPU readbacks update the file backing
+without temporarily opening those guest pages. Remaps, physical reuse, and live
+alias promotion preserve the memory contract.
+
+Only large GPU-type direct mappings (type 3, at least 256 MiB) are candidates.
+CPU heap mappings, stacks, live aliases, executable pages, and physical pages
+touched by guest-code faults stay pinned. As in Kyty, repeated user-mode faults
+in guest code can damage its System V red zone, so these pins are deliberate.
+This is not an unlimited-memory guarantee: pinned guest memory and live GPU
+resources still have to fit in the app budget. Later gameplay remains to be
+validated.
+
+The worker starts within 384 MiB of the app limit and attempts to recover 512 MiB
+of headroom. It reclaims private pages, keeping a tracked residency bit instead
+of repeatedly querying untouched pages. Already file-backed pages remain in the
+bounded window until its own capacity needs room. Failed private commits can
+reclaim memory synchronously; failed GPU image allocations can reclaim up to
+four 64 MiB batches and retry before reporting failure. Logs report page-out,
+page-in, stored content, mapped views, checksum checks, and pinned memory.
+
+For pressure reproduction, `LocalState/memory_limit_mb.txt` accepts a budget from
+2048 to 65536 MiB, clamped to the real OS limit. It changes the pager and cache
+policies, not the OS enforcement or the overlay's actual OS limit. Delete the
+file or write `0` after testing. Private `graphics-debug.txt` accepts
+`GOW3_UWP_SWAP=0` to disable paging for a comparison.
+
+`pc-smoke.ps1 -Mode memory` now checks all 64 MiB of a patterned allocation with
+an 8 MiB mapped window, concurrent readers during eviction, guest-code pins,
+mixed GPU protections, protected host writes, remaps, and physical aliases.
+The contract passes on desktop UWP and Series X: 48 MiB of private app RAM is
+released by the probe, 3072 initial page-in checksum checks pass, and no
+corruption is observed. The initial 4 GiB gameplay stress run exposed excessive
+background scanning and view churn; those were removed before the final run.
+
+Both input helpers now alternate A (Cross) and X (Square), with a 200 ms hold
+and a half-second target between presses. `xbox-autostart.ps1 -App <full-package>
+-Console <name> -Seconds 210 -StopAfter` keeps twelve rotating five-second
+screenshots in ignored `.local/transfers`. Network and screenshot time can
+extend an Xbox input step. Both helpers release scripted input on exit; use
+`-StopAfter` to close the measured game.

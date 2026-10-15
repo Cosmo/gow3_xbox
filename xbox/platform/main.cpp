@@ -25,11 +25,17 @@ extern "C" HANDLE gow3_uwp_find(const char *pattern,WIN32_FIND_DATAA *out);
 extern "C" BOOL gow3_uwp_find_next(HANDLE handle,WIN32_FIND_DATAA *out);
 static std::atomic<bool> finished{false};
 static std::atomic<bool> game_mode{false};
+static uint64_t memory_limit_override=0;
+extern "C" void runtime_memory_start_paging();
+extern "C" void gow3_uwp_pager_thread_init() {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+}
 extern "C" uint64_t gow3_uwp_app_memory_usage() {
     return winrt::Windows::System::MemoryManager::AppMemoryUsage();
 }
 extern "C" uint64_t gow3_uwp_app_memory_limit() {
-    return winrt::Windows::System::MemoryManager::AppMemoryUsageLimit();
+    auto actual=winrt::Windows::System::MemoryManager::AppMemoryUsageLimit();
+    return memory_limit_override ? std::min(memory_limit_override,actual) : actual;
 }
 #ifdef GOW3_BUILD_GRAPHICS
 #include "../graphics/present_bridge.h"
@@ -46,6 +52,11 @@ extern "C" IUnknown* gow3_uwp_core_window() {
 static void loader() {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     auto local=winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path();
+    {
+        std::ifstream limit_file(std::wstring(local)+L"\\memory_limit_mb.txt");
+        uint64_t mb=0;
+        if(limit_file>>mb && mb>=2048 && mb<=65536) memory_limit_override=mb<<20;
+    }
     auto log=std::wstring(local)+L"\\loader.log";
     _wfreopen(log.c_str(),L"w",stdout);
     auto error_log=std::wstring(local)+L"\\errors.log";
@@ -56,6 +67,7 @@ static void loader() {
     if(driver_stream!=INVALID_HANDLE_VALUE) SetStdHandle(STD_ERROR_HANDLE,driver_stream);
     setvbuf(stdout,nullptr,_IONBF,0); setvbuf(stderr,nullptr,_IONBF,0);
     std::printf("GOW3 UWP loader milestone 1\n");
+    if(memory_limit_override) std::printf("UWP memory: debug budget %llu MiB (OS limit unchanged)\n",gow3_uwp_app_memory_limit()>>20);
     GAMING_DEVICE_MODEL_INFORMATION model{};
     GetGamingDeviceModelInformation(&model);
     std::printf("Device model: 0x%08x; app budget: %llu MiB; controllers: %u\n",model.deviceId,
@@ -91,7 +103,7 @@ static void loader() {
            key=="GOW3_UWP_TEXTURE_DUMP"||key=="GOW3_UWP_RENDER_RES"||key=="GOW3_DRAW_PIPE"||
            key=="GOW3_UWP_TEXTURE_ADDRESSES"||key=="GOW3_DEFERRED_READBACK"||
            key=="GOW3_STALE_READBACK"||key=="GOW3_ASYNC_SHADERS"||key=="GOW3_PIPELINE_CACHE"||
-           key=="GOW3_UWP_METRICS"||key=="GOW3_VK_RECORD_THREAD"||key=="GOW3_GC_BUDGET_MB") {
+           key=="GOW3_UWP_METRICS"||key=="GOW3_VK_RECORD_THREAD"||key=="GOW3_GC_BUDGET_MB"||key=="GOW3_UWP_SWAP") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }
@@ -100,6 +112,7 @@ static void loader() {
     std::string user=winrt::to_string(local)+"\\user";
     CreateDirectoryW((std::wstring(local)+L"\\user").c_str(),nullptr);
     _putenv_s("GOW3_GPU_USER_DIR",user.c_str());
+    _putenv_s("GOW3_UWP_SWAP_FILE",(winrt::to_string(local)+"\\gow3-swap.bin").c_str());
 #ifdef GOW3_BUILD_GRAPHICS
     if(mode=="graphics") { int result=Gow3Uwp::GraphicsProbe(); std::printf("Graphics probe returned %d\n",result); finished=true; return; }
 #ifdef GOW3_LINK_RENDERER
@@ -174,6 +187,7 @@ static void loader() {
     const bool use_720p=render_res&&std::strcmp(render_res,"720p")==0;
     std::string patches=package+"\\Prepared\\patches-"+(use_720p?"720p":"native")+".bin";
     _putenv_s("GOW3_DMEM_MB","7104");
+    if(mode=="boot") runtime_memory_start_paging();
     _putenv_s("GOW3_ENGINE_FPS","60");
     _putenv_s("GOW3_VBLANK_HZ","60");
     std::printf("UWP graphics patches: %s, texture arena fix, 7104 MiB virtual direct pool, 60 Hz engine\n",use_720p?"720p":"native");

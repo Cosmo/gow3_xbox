@@ -24,14 +24,17 @@ if($Capture) {
     $captureIndex=0
     Write-Output "Keeping the latest 12 five-second captures in $captures"
 }
-Write-Output "Pulsing A once per second for $Seconds seconds ($PackageName)."
+$buttons=@('cross','square')
+$buttonIndex=0
+Write-Output "Alternating A and X every 0.5 seconds for $Seconds seconds ($PackageName)."
 try {
     while([DateTime]::UtcNow -lt $deadline) {
         if($game.HasExited) { break }
-        [IO.File]::WriteAllText($controls,'cross',$encoding)
+        $step=[Diagnostics.Stopwatch]::StartNew()
+        [IO.File]::WriteAllText($controls,$buttons[$buttonIndex],$encoding)
+        $buttonIndex=($buttonIndex+1)%$buttons.Count
         Start-Sleep -Milliseconds 200
         [IO.File]::WriteAllText($controls,'',$encoding)
-        Start-Sleep -Milliseconds 800
         if($Capture -and [DateTime]::UtcNow -ge $nextCapture -and (Test-Path -LiteralPath $frame)) {
             try {
                 $bitmap=[Drawing.Image]::FromFile($frame)
@@ -41,6 +44,8 @@ try {
             } catch { Write-Warning "Capture skipped: $($_.Exception.Message)" }
             $nextCapture=[DateTime]::UtcNow.AddSeconds(5)
         }
+        $remaining=500-$step.ElapsedMilliseconds
+        if($remaining -gt 0) { Start-Sleep -Milliseconds $remaining }
     }
 } finally {
     [IO.File]::WriteAllText($controls,'',$encoding)

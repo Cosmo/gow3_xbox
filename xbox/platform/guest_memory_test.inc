@@ -1,3 +1,4 @@
+#include "guest_swap_test.inc"
 static void *uwp_test_protect_pages(void *opaque) {
     uintptr_t base=(uintptr_t)opaque;
     for(unsigned round=0;round<32;++round) for(unsigned i=0;i<256;++i) {
@@ -78,6 +79,8 @@ int runtime_memory_selftest(void) {
     printf("UWP 64 MiB release probe: before=%" PRIu64 " MiB, peak=%" PRIu64 " MiB, after=%" PRIu64 " MiB\n",
         memory_before>>20,memory_peak>>20,memory_after>>20);
     if(flexible_bytes) return 22;
+    int swap_result=uwp_swap_selftest();
+    if(swap_result) { printf("STOP: swap self-test %d\n",swap_result); return swap_result; }
     puts("PASS: lazy zero pages, remap preservation, live aliases, protected host writes, zero on reuse");
     puts("PASS: partial flexible unmap retains the other page and reuses a zero page");
     puts("PASS: 4 KiB protection boundaries survive first commit and protected host copies");
