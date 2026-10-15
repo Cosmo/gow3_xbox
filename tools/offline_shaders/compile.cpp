@@ -16,6 +16,7 @@
 #include "shader_recompiler/specialization.h"
 #include "video_core/amdgpu/regs_depth.h"
 #include "gow3_precompile.h"
+#include "gow3_shader_inputs.h"
 
 namespace fs = std::filesystem;
 using namespace Shader;
@@ -74,6 +75,8 @@ struct Case {
     std::vector<u32> flat;
     u32 flat_size{};
     size_t walker_bytes{};
+    std::shared_ptr<Gow3Precompile::AssetInputs> asset_inputs;
+    std::optional<Gcn::FetchShaderSnapshot> asset_fetch;
 };
 
 static Case ReadCase(const fs::path& path) {
@@ -178,15 +181,97 @@ static void Describe(const fs::path& path, const Case& c, bool detailed = false)
                 u32(b.swizzle.r), u32(b.swizzle.g), u32(b.swizzle.b), u32(b.swizzle.a));
         }
     }
+    if(detailed) {
+        std::cerr << fmt::format("State 0x{:016x}\n",c.recorded.pgm_hash);
+        Info info;
+        static_cast<InfoPersistent&>(info)=c.recorded;
+        info.flattened_ud_buf=c.flat;
+        info.pgm_base=0;
+        for(size_t i=0;i<c.recorded.buffers.size();++i) {
+            const auto& desc=c.recorded.buffers[i];
+            const auto sharp=desc.GetSharp(info);
+            std::cerr << fmt::format("Buffer{}: type={}, stride={}, format={}/{}, formatted={}, swizzle={}, records={}, offsets=",i,
+                u32(desc.buffer_type),sharp.GetStride(),u32(sharp.GetDataFmt()),u32(sharp.GetNumberFmt()),desc.is_formatted,sharp.swizzle_enable,sharp.num_records);
+            for(auto off:desc.sharp_fetch.offsets) std::cerr << off << ',';
+            std::cerr << '\n';
+        }
+        for(size_t i=0;i<c.recorded.images.size();++i) {
+            const auto& desc=c.recorded.images[i];
+            const auto sharp=desc.GetSharp(info);
+            std::cerr << fmt::format("Image{}: type={}, format={}/{}, array={}, depth={}, written={}, offsets=",i,
+                u32(sharp.GetType()),u32(sharp.GetDataFmt()),u32(sharp.GetNumberFmt()),desc.is_array,desc.is_depth,desc.is_written);
+            for(auto off:desc.sharp_fetch.offsets) std::cerr << off << ',';
+            std::cerr << '\n';
+        }
+        for(size_t i=0;i<c.recorded.samplers.size();++i) {
+            const auto sharp=c.recorded.samplers[i].GetSharp(info);
+            std::cerr << fmt::format("Sampler{}: unnormalized={}, degamma={}, raw={:016x}/{:016x}, offset={}\n",i,u32(sharp.force_unnormalized),u32(sharp.force_degamma),sharp.raw0,sharp.raw1,c.recorded.samplers[i].sharp_fetch.offsets[0]);
+        }
+        if(c.recorded.hw_stage==HwStage::Vertex) {
+            const auto& v=c.spec.runtime_info.hw.vs;
+            const auto& s=c.spec.runtime_info.sw.vs;
+            std::cerr << fmt::format("Vertex: outputs={}, emulate_depth={}, clip_disable={}, clip_planes={}, motion={}, steps={}/{}, offsets={}/{}\n",
+                v.num_outputs,v.emulate_depth_negative_one_to_one,v.clip_disable,v.user_clip_plane_mask,v.motion_vectors,s.step_rate_0,s.step_rate_1,s.vertex_sgpr_offset,s.instance_sgpr_offset);
+        }
+        if(c.spec.fetch_shader_data) {
+            const auto& fetch=*c.spec.fetch_shader_data;
+            std::cerr << fmt::format("Fetch: size={}, vertex_offset={}, instance_offset={}\n",fetch.size,fetch.vertex_offset_sgpr,fetch.instance_offset_sgpr);
+            for(const auto& a:fetch.attributes) std::cerr << fmt::format("Fetch attr: semantic={}, vgpr={}, elements={}, sgpr={}, dword={}, instance={}, offset={}\n",
+                a.semantic,a.dest_vgpr,a.num_elements,a.sgpr_base,a.dword_offset,a.instance_data,a.inst_offset);
+        }
+        for(const auto& a:c.spec.vs_attribs) std::cerr << fmt::format("VS format: divisor={}, class={}, mapping={}/{}/{}/{}\n",
+            a.divisor,u32(a.num_class),u32(a.dst_select.r),u32(a.dst_select.g),u32(a.dst_select.b),u32(a.dst_select.a));
+    }
+}
+
+static Case ReadVertexAssetCase(Reader& reader,std::string_view target) {
+    if(target!="vertex"&&target!="vertex-depth") throw std::runtime_error("Unknown vertex target variant");
+    const auto version=reader.Value<u32>();
+    if(version!=1&&version!=2) throw std::runtime_error("Unknown vertex recipe version");
+    Case c;
+    c.recorded.pgm_hash=reader.Value<u64>();
+    const auto size=reader.Value<u32>();
+    if(size<32||size>1244||reader.bytes.size()!=size+(version==2?12:0)) throw std::runtime_error("Invalid vertex header length");
+    std::array<u32,8> regs;
+    reader.Read(regs.data(),32);
+    const auto inputs=regs[7]&255,exports=(regs[7]>>8)&255;
+    const auto semantic_bytes=inputs*4+((exports*2+3)&~3u);
+    if(regs[0]!=size+8||regs[1]!=0xffffffff||regs[7]>>16||inputs>32||exports>32||size<32+semantic_bytes||(size-32-semantic_bytes)%4||regs[6])
+        throw std::runtime_error("Invalid vertex register/semantic layout");
+    const auto usages_count=(size-32-semantic_bytes)/4;
+    std::vector<u32> usages(usages_count),semantics(inputs);
+    reader.Read(usages.data(),usages_count*4);reader.Read(semantics.data(),inputs*4);
+    reader.Read(nullptr,(exports*2+3)&~3u);
+    if(version==2) c.spec.start=reader.Value<Backend::Bindings>();
+    c.asset_inputs=std::make_shared<Gow3Precompile::AssetInputs>(usages);
+    c.asset_fetch=Gow3Precompile::AssetFetch(semantics,usages);
+    c.recorded.hw_stage=HwStage::Vertex;c.recorded.sw_stage=SwStage::Vertex;
+    c.flat.resize(16);c.flat_size=16;
+    auto& runtime=c.spec.runtime_info;
+    runtime.Initialize(HwStage::Vertex,SwStage::Vertex);
+    AmdGpu::ShaderProgram pgm{};
+    std::memcpy(&pgm.settings,regs.data()+2,8);
+    runtime.props={pgm.settings.fp_denorm_mode32,pgm.settings.fp_denorm_mode64,
+        pgm.settings.fp_round_mode32,pgm.settings.fp_round_mode64,
+        pgm.settings.num_user_regs,pgm.settings.vgpr_comp_cnt,pgm.NumVgprs()};
+    if(runtime.props.num_user_data>16) throw std::runtime_error("Invalid vertex user data count");
+    runtime.hw.vs.emulate_depth_negative_one_to_one=target=="vertex-depth";
+    return c;
 }
 
 static Case ReadAssetCase(const fs::path& path, std::string_view target) {
+    const auto bytes = ReadFile(path);
+    Reader reader{bytes};
+    const auto magic=reader.Value<u32>();
+    if(magic==0x31505647) return ReadVertexAssetCase(reader,target);
+    u32 sampler_flags=0;
+    if(target.ends_with("-sampler1")) {sampler_flags=1;target.remove_suffix(9);}
+    else if(target.ends_with("-sampler2")) {sampler_flags=2;target.remove_suffix(9);}
+    else if(target.ends_with("-sampler3")) {sampler_flags=3;target.remove_suffix(9);}
     if (target != "depth-only" && target != "rgba8" && target != "bgra8") {
         throw std::runtime_error("Unknown asset target variant");
     }
-    const auto bytes = ReadFile(path);
-    Reader reader{bytes};
-    if (reader.Value<u32>() != 0x31504647) {
+    if (magic != 0x31504647) {
         throw std::runtime_error("Invalid GFP1 fragment asset recipe");
     }
     const auto version = reader.Value<u32>();
@@ -202,18 +287,21 @@ static Case ReadAssetCase(const fs::path& path, std::string_view target) {
     if (regs[0] != size + 8 || regs[1] != 0xffffffff || regs[12] > 32) {
         throw std::runtime_error("Invalid fragment asset header");
     }
-    // No resource table provider yet. Interpolation comes from the paired
-    // vertex's asset export semantics, never from recorded shader metadata.
-    if (size != 52 + ((regs[12] * 2 + 3) & ~3u) || (regs[8] & 63) != regs[12]) {
-        throw std::runtime_error("Asset-only proof requires no usage slots and matching input semantics");
+    // Resource slots and interpolation come from the packed game header.
+    const u32 semantic_bytes = (regs[12] * 2 + 3) & ~3u;
+    if (size < 52 + semantic_bytes || (size-52-semantic_bytes)%4 || (regs[8] & 63) != regs[12]) {
+        throw std::runtime_error("Asset header usage/semantic length mismatch");
     }
+    const u32 usage_count = (size-52-semantic_bytes)/4;
+    std::vector<u32> usages(usage_count);
+    reader.Read(usages.data(),usages.size()*4);
     const auto* semantics = reader.bytes.data();
     for (u32 i = 0; i < regs[12]; ++i) {
         u16 semantic;
         std::memcpy(&semantic, semantics + i * 2, 2);
         if (semantic >> 8) throw std::runtime_error("Unresolved asset interpolation flags");
     }
-    reader.Read(nullptr, size - 52);
+    reader.Read(nullptr, semantic_bytes);
     std::vector<u32> parameters;
     if (version == 2) {
         const auto count = reader.Value<u32>();
@@ -231,6 +319,7 @@ static Case ReadAssetCase(const fs::path& path, std::string_view target) {
     c.recorded.sw_stage = SwStage::Fragment;
     c.flat.resize(16);
     c.flat_size = 16;
+    if(!usages.empty()) c.asset_inputs = std::make_shared<Gow3Precompile::AssetInputs>(usages,sampler_flags);
     auto& runtime = c.spec.runtime_info;
     runtime.Initialize(HwStage::Fragment, SwStage::Fragment);
     AmdGpu::ShaderProgram pgm{};
@@ -280,7 +369,7 @@ static int Compile(const fs::path& metadata, const fs::path& profile_path,
     const bool asset_only = !asset_target.empty();
     auto c = asset_only ? ReadAssetCase(metadata, asset_target) : ReadCase(metadata);
     Describe(metadata, c);
-    if (c.recorded.hw_stage != HwStage::Fragment || c.spec.fetch_shader_data) {
+    if ((!asset_only && c.recorded.hw_stage != HwStage::Fragment) || c.spec.fetch_shader_data) {
         throw std::runtime_error("First replay proof supports fragment shaders only");
     }
     if (fs::exists(output) || !fs::is_directory(output.parent_path())) {
@@ -308,17 +397,24 @@ static int Compile(const fs::path& metadata, const fs::path& profile_path,
     info.pgm_base = 0;
     info.user_data = std::span(c.flat).first(c.spec.runtime_info.props.num_user_data);
     info.flattened_ud_buf = c.flat;
+    if(c.asset_inputs) {
+        info.offline_memory = c.asset_inputs.get();
+        info.user_data = c.asset_inputs->UserData().first(c.spec.runtime_info.props.num_user_data);
+        info.offline_descriptor_snapshot = true;
+    }
     Gcn::FetchShaderSnapshot fetch{.info = &info};
+    if(c.asset_fetch) {fetch=std::move(*c.asset_fetch);fetch.info=&info;}
     Gcn::ScopedFetchShaderSnapshot fetch_scope(fetch);
     Pools pools;
     auto runtime = c.spec.runtime_info;
     auto binding = c.spec.start;
     const auto ir = TranslateProgram(code, pools, info, runtime, profile);
-    if (asset_only && (!info.buffers.empty() || !info.images.empty() || !info.samplers.empty() ||
+    if (asset_only && !c.asset_inputs && (!info.buffers.empty() || !info.images.empty() || !info.samplers.empty() ||
                        !info.fmasks.empty() || info.ud_mask.mask)) {
         throw std::runtime_error("Asset-only shader needs resource or user-data specialization");
     }
     const auto spirv = Backend::SPIRV::EmitSPIRV(profile, runtime, ir, binding);
+    std::cout << fmt::format("{{\"end_bindings\":[{},{},{}]}}\n",binding.unified,binding.buffer,binding.user_data);
     const auto result = std::as_bytes(std::span(spirv));
     std::ofstream file(output, std::ios::binary);
     file.write(reinterpret_cast<const char*>(result.data()), result.size());
@@ -408,9 +504,9 @@ int main(int argc, char** argv) {
             Describe(argv[2], ReadAssetCase(argv[2], "depth-only"), true);
             return 0;
         }
-        if (argc == 3 && std::string_view(argv[1]) == "list") {
+        if (argc == 3 && (std::string_view(argv[1]) == "list" || std::string_view(argv[1]) == "list-states")) {
             for (const auto& file : fs::directory_iterator(argv[2])) {
-                if (file.path().extension() == ".meta") Describe(file.path(), ReadCase(file.path()));
+                if (file.path().extension() == ".meta") Describe(file.path(), ReadCase(file.path()),std::string_view(argv[1])=="list-states");
             }
             return 0;
         }

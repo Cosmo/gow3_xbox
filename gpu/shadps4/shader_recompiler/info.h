@@ -17,6 +17,7 @@
 #include "shader_recompiler/ir/reg.h"
 #include "shader_recompiler/ir/type.h"
 #include "shader_recompiler/params.h"
+#include "shader_recompiler/offline_memory.h"
 #include "shader_recompiler/resource.h"
 #include "shader_recompiler/runtime_info.h"
 
@@ -124,6 +125,8 @@ struct Info : InfoPersistent {
     // Asset precompilation uses explicit descriptor bytes, never guest pointers.
     // This is transient and deliberately outside serialized InfoPersistent.
     bool offline_descriptor_snapshot = false;
+    const OfflineMemory* offline_memory = nullptr;
+    SrtReadPlan offline_reads;
 
     AttributeFlags loads{};
     AttributeFlags stores{};

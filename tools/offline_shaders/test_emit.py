@@ -23,6 +23,17 @@ class EmitTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 emit.encode_recipe(shader, parameters)
 
+    def test_resource_recipe_keeps_asset_usage_slots_before_semantics(self):
+        shader = fragment()
+        shader['usage_slots'] = [0x0002011b, 0x03040200, 0x000c0201, 0x00100002]
+        shader['header_bytes'] += 16
+        shader['register_words'][0] += 16
+        with self.assertRaises(ValueError):
+            emit.encode_recipe(shader, (0,))
+        data = emit.encode_recipe(shader, (0,), resources=True)
+        self.assertEqual(struct.unpack_from('<4I', data, 20+52), tuple(shader['usage_slots']))
+        self.assertEqual(struct.unpack_from('<H', data, 20+52+16)[0], 15)
+
     def test_asset_requirements_not_historical_cache_membership_select_candidates(self):
         simple = fragment('0x0000000000000002', ())
         linked = fragment()

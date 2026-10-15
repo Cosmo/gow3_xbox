@@ -639,7 +639,55 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     PopPtr(c);
 }
 
+static void GenerateOfflineSrt(Info& info, PassInfo& pass_info) {
+    info.offline_reads.clear();
+    info.flattened_ud_buf.assign(NUM_USER_DATA_REGS, 0);
+    std::copy(info.user_data.begin(), info.user_data.end(), info.flattened_ud_buf.begin());
+    pass_info.dst_off_dw = NUM_USER_DATA_REGS;
+    const auto memory = info.offline_memory;
+    auto pointer = [&](u64 address) {
+        return (u64(memory->Read32(address)) | (u64(memory->Read32(address + 4)) << 32)) &
+               0xffffffffffffULL;
+    };
+    auto visit = [&](auto&& self, IR::Inst* tree, u64 address, std::vector<u32> path) -> void {
+        if (path.size() > 16)
+            throw std::runtime_error("Offline descriptor table nesting exceeds limit");
+        const auto* uses = pass_info.GetUsesAsPointer(tree);
+        if (!uses)
+            throw std::runtime_error("Offline descriptor pointer has no uses");
+        for (auto [offset, use] : *uses) {
+            if (!offset.IsImmediate())
+                throw std::runtime_error("Offline descriptor table has a dynamic offset");
+            if (info.offline_reads.size() >= 16384)
+                throw std::runtime_error("Offline descriptor layout exceeds limit");
+            info.flattened_ud_buf.push_back(memory->Read32(address + u64(offset.U32()) * 4));
+            info.offline_reads.push_back({path, offset.U32(), pass_info.dst_off_dw});
+            SetFlatbufOffset(use, pass_info.dst_off_dw++);
+        }
+        for (auto [offset, use] : *uses) {
+            if (pass_info.GetUsesAsPointer(use)) {
+                auto child = path;
+                child.push_back(offset.U32());
+                self(self, use, pointer(address + u64(offset.U32()) * 4), std::move(child));
+            }
+        }
+    };
+    for (const auto& [reg, tree] : pass_info.srt_roots) {
+        const auto index = static_cast<u32>(reg);
+        if (index + 1 >= info.user_data.size())
+            throw std::runtime_error("Offline descriptor root outside user data");
+        const u64 address = (u64(info.user_data[index]) | (u64(info.user_data[index + 1]) << 32)) &
+                            0xffffffffffffULL;
+        visit(visit, tree, address, {index});
+    }
+    info.srt_info.flattened_bufsize_dw = pass_info.dst_off_dw;
+}
+
 static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
+    if (info.offline_memory) {
+        GenerateOfflineSrt(info, pass_info);
+        return;
+    }
     Xbyak::CodeGenerator& c = g_srt_codegen;
 
     if (pass_info.srt_roots.empty()) {

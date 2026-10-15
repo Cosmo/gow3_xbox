@@ -254,6 +254,42 @@ input-format support.
 
 ## Remaining work
 
+### Resource and vertex experiments after the launcher milestone
+
+The native compiler now also accepts explicit float-2D resource variants from
+the asset's usage slots. `AssetInputs` supplies immediate descriptors, extended
+user data, resource tables and sampler tables in a bounded synthetic address
+space. The compiler records the table read plan instead of generating or
+executing a guest-pointer walker for offline input. Unsupported dynamic offsets
+and out-of-bounds reads are rejected.
+
+The resource experiment selected 267 known fragment identities plus 48 unseen
+resource-layout cases. All 315 compiled for twelve explicit attachment/sampler
+variants (3,780 outputs, zero failures). After compilation, 89 of the 267
+available references matched byte-for-byte. The rest expose per-texture sampler
+state and other variants that a uniform sampler setting cannot represent. The
+first independently prepared textured `bloom` shader matches all 5,108 reference
+bytes. No recorded specialization inputs are used by this path.
+
+GVP1 vertex recipes recover fetch attributes from the asset's input semantics,
+including the buffer-table SGPR and semantic descriptor offsets. Version 2 also
+carries starting binding counts obtained by compiling the paired fragment
+shader. The first `bloom` vertex proof matches all 6,508 reference bytes with
+asset-derived inputs and a common float mesh layout. It does not establish
+coverage of all vertex layouts. Native records remain comparison data only.
+
+The original 270 recorded-specialization replay checks still pass exactly.
+These experiments are not enabled in the launcher's prepared cache yet; the
+launcher remains on the validated 154-entry subset until resource and layout
+matching are implemented. Private results are `resource-blind-02-validation.json`,
+`resource-probe-01`, `vertex-probe-01` and `replay-regression-01`.
+
+Fragment recipes may be tried with `--resources`, `--hash` and `--limit` in
+`emit.py`. Native targets `rgba8-sampler1/2/3` (also depth-only/BGRA8) select the
+two sampler flag bits explicitly; the unsuffixed target uses neither. GVP1
+recipes use `vertex` or `vertex-depth`, the latter applying the target's depth
+range conversion. These are research variants, not a universal material plan.
+
 Extend independent compilation to textured materials and vertex shaders by
 reconstructing their mesh buffer formats, texture/sampler descriptors, and
 binding layout. Resolve the remaining semantic flags and enumerate actual pass

@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 
 
-def select_candidates(shaders, material_plan=None):
+def select_candidates(shaders, material_plan=None, *, resources=False):
     links = defaultdict(set)
     if material_plan:
         for pair in material_plan['pairs']:
@@ -26,7 +26,7 @@ def select_candidates(shaders, material_plan=None):
     for shader in shaders:
         if shader['stage'] != 'fragment':
             unsupported['vertex_input_formats'] += 1
-        elif shader['usage_slots']:
+        elif shader['usage_slots'] and not resources:
             unsupported['resource_descriptors'] += 1
         elif shader['input_semantics']:
             variants = links[shader['shader_hash']]
@@ -39,13 +39,14 @@ def select_candidates(shaders, material_plan=None):
     return candidates, unsupported
 
 
-def encode_recipe(shader, parameters):
+def encode_recipe(shader, parameters, *, resources=False):
     semantics = shader['input_semantics']
-    if shader['usage_slots'] or len(semantics) != len(parameters) or any(s >> 8 for s in semantics):
+    if (shader['usage_slots'] and not resources) or len(semantics) != len(parameters) or any(s >> 8 for s in semantics):
         raise ValueError('Unsupported resource or semantic recipe')
     if any(p < 0 or p >= 32 for p in parameters):
         raise ValueError('Invalid interpolation parameter')
     header = struct.pack('<13I', *shader['register_words'])
+    header += struct.pack(f'<{len(shader["usage_slots"])}I', *shader['usage_slots'])
     header += struct.pack(f'<{len(semantics)}H', *semantics)
     header += bytes(-len(header) % 4)
     if len(header) != shader['header_bytes']:
@@ -61,6 +62,9 @@ def main():
     parser.add_argument('--profile', type=Path, required=True, help='Target GPU compiler profile.bin')
     parser.add_argument('--worker', type=Path, required=True)
     parser.add_argument('--plan', type=Path, help='Asset-derived material linkage plan')
+    parser.add_argument('--resources', action='store_true', help='Try explicit float-2D resource variants from asset binding tables')
+    parser.add_argument('--hash', action='append', help='Explicit original hash subset; does not provide specialization inputs')
+    parser.add_argument('--limit', type=int, help='Explicit bounded experiment size')
     parser.add_argument('--target', choices=('depth-only', 'rgba8', 'bgra8'), action='append', required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
@@ -76,20 +80,27 @@ def main():
     material_plan = json.loads(args.plan.read_text(encoding='utf-8')) if args.plan else None
     if material_plan and material_plan['findings']:
         parser.error('requires a material plan without findings')
-    candidates, unsupported = select_candidates(assets['recovered'], material_plan)
+    candidates, unsupported = select_candidates(assets['recovered'], material_plan, resources=args.resources)
+    if args.hash:
+        candidates = [(s,p) for s,p in candidates if s['shader_hash'] in args.hash]
+    if args.limit is not None:
+        if args.limit <= 0:
+            parser.error('--limit must be positive')
+        candidates = candidates[:args.limit]
     report = {'schema_version': 1, 'uses_recorded_specializations': False,
               'uses_reference_spirv': False, 'whole_game_precompilation': False,
               'profile_sha256': hashlib.sha256(profile.read_bytes()).hexdigest(),
               'asset_shader_count': len(assets['recovered']), 'candidate_fragment_count': len(candidates),
               'unsupported_asset_requirements': dict(unsupported),
               'target_variants': args.target, 'results': []}
+    report['descriptor_variant'] = 'float-2d' if args.resources else 'resource-free'
     with tempfile.TemporaryDirectory(dir=output, prefix='inputs-') as temporary:
         recipe = Path(temporary) / 'current.psh'
         for shader, parameters in candidates:
             code = args.inventory.parent / 'objects' / (shader['code_sha256'] + '.gcn')
             if hashlib.sha256(code.read_bytes()).hexdigest() != shader['code_sha256']:
                 raise RuntimeError('extracted program digest changed')
-            recipe.write_bytes(encode_recipe(shader, parameters))
+            recipe.write_bytes(encode_recipe(shader, parameters, resources=args.resources))
             for target in dict.fromkeys(args.target):
                 name = shader['shader_hash'] + '-' + target
                 command = [str(worker), 'emit-asset', target, str(recipe), str(profile),
