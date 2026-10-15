@@ -8,9 +8,49 @@ whole game without requiring a prior playthrough.
 The extractor and headless compiler can freshly compile extracted fragment
 programs using recorded specialization data. A small resource-free fragment
 subset also compiles from asset headers without recorded specialization data.
-**A complete asset-derived specialization plan and an importable whole-game
-runtime cache are not implemented yet.** No launcher or runtime behavior changes
-are included.
+The UWP launcher now exposes **Start game** and **Precompile shaders**, with scan
+and compilation progress. The supported asset-only subset produces runtime-ready
+entries; textured and other unsupported shaders retain on-demand compilation.
+Complete whole-game coverage is not implemented yet.
+
+## Native launcher preparation
+
+The launcher invokes the C++ asset scanner and the renderer's C++ shader compiler
+directly. Python is used only for research and comparison tools. Preparation
+requires the installed dump and the current renderer profile, without recorded
+gameplay metadata. It seeks past large texture/model payloads, bounds material
+buffers, and reuses compiler memory between shaders.
+
+For CUSA01715 the current supported group contains **154 fragment shader
+identities, representing 40 distinct code sequences**. Three target variants
+(depth-only, RGBA8, BGRA8) produce 462 preparation checks. Two variants have
+identical specialization keys, so a fresh run writes 460 files and reuses two;
+a second run reuses all 462 checks. Unsupported groups include 48,618 fragment
+and 48,772 vertex identities. Resource-free shaders with inputs use vertex
+semantic linkage recovered from the same material.
+
+Prepared files live in `user/shader/precompiled/CUSA01715` inside app-local
+storage. Runtime synchronous and asynchronous compilation check these files
+before translating a shader. Original identity, code hash, shader runtime
+settings, target profile, file size, version and output checksum must match.
+Missing, incompatible or corrupt entries fall back to the usual compiler.
+Partial preparation can safely resume; existing valid entries are reused.
+
+This prepares PS4 shader translation to SPIR-V. Driver translation and graphics
+pipeline creation can still occur when a draw is first encountered.
+
+The native implementation can also be exercised without launching the game:
+
+```powershell
+tools/offline_shaders/build.ps1
+xbox/.local/build/gpu/gow3-offline-shader.exe prepare-native <dump> <profile.bin> <output-cache>
+xbox/.local/build/gpu/gow3-offline-shader.exe verify-precompiled <output-cache> <recorded.meta> <profile.bin> <original.gcn> <recorded.spv>
+```
+
+`verify-precompiled` uses recorded settings only to test runtime lookup, after
+asset-only preparation. It compares SPIR-V bytes and checks that changed code,
+sample count and incompatible profile are rejected. All seven available
+reference cases pass; a separate corrupt-file check confirms a cache miss.
 
 ## Running the inventory
 
@@ -217,7 +257,7 @@ input-format support.
 Extend independent compilation to textured materials and vertex shaders by
 reconstructing their mesh buffer formats, texture/sampler descriptors, and
 binding layout. Resolve the remaining semantic flags and enumerate actual pass
-attachment/blend/depth variants before producing runtime-importable entries.
+attachment/blend/depth variants before expanding runtime-importable coverage.
 Repeating a stored
 SPIR-V file or replaying only previously collected pipelines would not meet the
 whole-game goal.
@@ -233,7 +273,8 @@ native-layout structures and include resource-table walker machine code.
 `Info::RefreshFlatBuf` can follow guest pointers. The worker supplies captured
 descriptors without following old process addresses for replay, but the general
 asset-derived descriptor/fetch-data provider still needs implementing.
-Keep the experiment outside active runtime caches until fresh output is checked.
+Research outputs stay outside active runtime caches; the launcher writes only
+the supported, validated subset to its separate versioned cache.
 
 Useful prior art: [KytyPS5 Shaders Lab](https://github.com/Almo7aya/KytyPS5-Shaders-Lab)
 for offline extraction/compiler experiments,

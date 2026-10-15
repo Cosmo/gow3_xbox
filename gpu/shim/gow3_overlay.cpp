@@ -67,6 +67,7 @@ bool initialized = false;
 std::atomic<bool> menu_open{false};
 bool r3_down = false, l2_down = false;
 std::atomic<bool> loading{false};
+std::string loading_label;
 std::atomic<u32> loading_done{0}, loading_total{0};
 std::atomic<u32> background_done{0}, background_total{0};
 bool dirty = false; // settings changed while open: saved on close
@@ -758,7 +759,9 @@ void LoadingScreen() {
                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
     const u32 done = loading_done, total = loading_total;
     ImGui::SetWindowFontScale(1.6f);
-    ImGui::TextUnformatted(total ? "Loading shader cache..." : "Preparing graphics...");
+    ImGui::TextUnformatted(loading_label.empty()
+                              ? (total ? "Loading shader cache..." : "Preparing graphics...")
+                              : loading_label.c_str());
     ImGui::SetWindowFontScale(1.0f);
     if (total) {
         char count[64];
@@ -766,7 +769,8 @@ void LoadingScreen() {
                       u32(u64(done) * 100 / total));
         ImGui::ProgressBar(float(done) / float(total), ImVec2(-1.0f, 0.0f), count);
     }
-    ImGui::TextDisabled("The first start after an update takes longer.");
+    ImGui::TextDisabled(loading_label.empty() ? "The first start after an update takes longer." :
+                       "Other shaders will be prepared during gameplay.");
     ImGui::End();
 }
 
@@ -1105,6 +1109,10 @@ void SetLoading(bool active, u32 done, u32 total) {
     loading_done = done;
     loading_total = total;
     loading = active;
+}
+void SetLoadingLabel(const std::string& label) {
+    std::scoped_lock lock{imgui_mutex};
+    loading_label = label;
 }
 
 bool Visible() {

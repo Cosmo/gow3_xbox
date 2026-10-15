@@ -11,6 +11,7 @@
 #include <string>
 #include <unordered_set>
 #include "gow3_threads.h"
+#include "gow3_precompile.h"
 
 #include "common/hash.h"
 #include "common/thread.h"
@@ -494,14 +495,14 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
     AsyncJob<bool> capture_job;
     if (!capture_job.Start(*capture_compiler, [this, build, binding] {
         PhaseTimer capture{g_gow3_capture_ns};
-        auto [pools, reused] = compiler_pools.Acquire();
-        build->pools = std::move(pools);
-        if (reused) {
-            ++g_gow3_pool_reuses;
+        if (!Gow3Precompile::TryLoad(build->info,build->runtime,build->code,profile,build->binary)) {
+            auto [pools, reused] = compiler_pools.Acquire();
+            build->pools = std::move(pools);
+            if (reused) ++g_gow3_pool_reuses;
+            // The GPU thread waits until guest reads and specialization are captured.
+            build->ir.emplace(Shader::TranslateProgram(build->code, *build->pools, build->info,
+                                                       build->runtime, profile));
         }
-        // gow3: the GPU thread waits until all guest reads and specialization are captured.
-        build->ir.emplace(Shader::TranslateProgram(build->code, *build->pools, build->info,
-                                                   build->runtime, profile));
         build->spec = Shader::StageSpecialization(build->info, build->runtime, profile, binding);
         build->fetch.Capture(build->info);
         return true;
@@ -526,8 +527,10 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
     const bool queued = build->job.Start(*compiler, [this, build] {
         PhaseTimer compile{g_gow3_async_ns};
         Shader::Gcn::ScopedFetchShaderSnapshot snapshot{build->fetch};
-        auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, build->runtime, *build->ir,
-                                                    build->binding);
+        auto spv = std::move(build->binary);
+        if (spv.empty()) spv = Shader::Backend::SPIRV::EmitSPIRV(profile, build->runtime, *build->ir,
+                                                               build->binding);
+        else build->info.AddBindings(build->binding);
         DumpShader(build->code, build->info.pgm_hash, build->info.hw_stage, build->permutation, "bin");
         DumpShader(spv, build->info.pgm_hash, build->info.hw_stage, build->permutation, "spv");
         auto patch = GetShaderPatch(build->info.pgm_hash, build->info.hw_stage,
@@ -536,7 +539,7 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
                                     instance.GetDevice());
         build->binary = std::move(spv);
         build->ir.reset();
-        compiler_pools.Recycle(std::move(build->pools));
+        if (build->pools) compiler_pools.Recycle(std::move(build->pools));
         return build;
     }, true);
     if (queued) {
@@ -1149,8 +1152,14 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
     CompileTimer timer;
 
-    const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
-    auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    std::vector<u32> spv;
+    if (Gow3Precompile::TryLoad(info, runtime_info, code, profile, spv)) {
+        std::printf("Precompiled asset shader hit: %016llx (%zu words)\n", info.pgm_hash, spv.size());
+        info.AddBindings(binding);
+    } else {
+        const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
+        spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    }
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     vk::ShaderModule module;

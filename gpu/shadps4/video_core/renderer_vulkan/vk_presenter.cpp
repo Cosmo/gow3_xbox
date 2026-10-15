@@ -19,6 +19,7 @@
 #include "gow3_overlay.h"
 #include "gow3_settings.h"
 #include "gow3_graphics.h"
+#include "gow3_precompile.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_warmup_inbox.h"
@@ -166,6 +167,52 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 #endif
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     Gow3Overlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
+
+#ifdef GOW3_UWP
+    if (const char* launcher=std::getenv("GOW3_UWP_LAUNCHER"); launcher && *launcher=='1') {
+        std::string title="God of War III Remastered";
+        const char* automatic=std::getenv("GOW3_PRECOMPILE_AUTORUN");
+        bool compile_once=automatic&&*automatic=='1';
+        for (;;) {
+            int action=1;
+            if (!compile_once) {
+                Gow3Overlay::BeginChoice(title,{"Start game","Precompile shaders"},{},0);
+                action=-1;
+                while(action==-1) {
+                    // The dedicated UWP window thread already polls controller input.
+                    PresentLoadingFrame();
+                    action=Gow3Overlay::PollChoice();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                }
+                if(action==0) break;
+                if(action!=1) continue;
+            }
+            compile_once=false;
+            try {
+                const char* dump=std::getenv("GOW3_PRECOMPILE_DUMP");
+                if(!dump||!*dump) throw std::runtime_error("Game folder is not configured");
+                auto last=std::chrono::steady_clock::time_point{};
+                const auto result=Gow3Precompile::Prepare(dump,Gow3Precompile::CacheDirectory(),
+                    rasterizer->GetPipelineCache().GetProfile(),[&](const auto& progress) {
+                        const auto now=std::chrono::steady_clock::now();
+                        if(now-last<std::chrono::milliseconds(100)&&progress.done!=progress.total) return;
+                        last=now;
+                        Gow3Overlay::SetLoadingLabel(progress.scanning ? "Scanning game files..." : "Precompiling shaders...");
+                        Gow3Overlay::SetLoading(true,progress.done,progress.total);
+                        PresentLoadingFrame();
+                    });
+                title=fmt::format("{} shader entries prepared. Others compile during gameplay.{}",
+                    result.prepared_entries,result.failed ? " Some variants could not be prepared." : "");
+                std::printf("Launcher precompile: %u entries, %u variants ready\n",result.prepared_entries,result.compiled+result.already_cached);
+            } catch(const std::exception& error) {
+                title=std::string("Precompilation could not finish: ")+error.what();
+                std::printf("Launcher precompile failed: %s\n",error.what());
+            }
+            Gow3Overlay::SetLoading(false,0,0);
+            Gow3Overlay::SetLoadingLabel({});
+        }
+    }
+#endif
 
     const bool binary_cache = EmulatorSettingsImpl::Flag("GOW3_PIPELINE_BINARIES", true) &&
                               EmulatorSettings.IsPipelineCacheEnabled();
@@ -683,8 +730,33 @@ void Presenter::PresentLoadingFrame() {
     barrier(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal,
             vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eColorAttachmentWrite);
     Gow3Overlay::Render(cmdbuf, swapchain.ImageView(), extent);
+#ifdef GOW3_UWP
+    // The existing opt-in frame capture also covers launcher/progress frames.
+    std::unique_ptr<VideoCore::UniqueBuffer> capture;
+    VmaAllocationInfo allocation{};
+    static auto last_capture=std::chrono::steady_clock::time_point{};
+    const auto now=std::chrono::steady_clock::now();
+    const char* enabled=std::getenv("GOW3_UWP_CAPTURE");
+    const char* user=std::getenv("GOW3_GPU_USER_DIR");
+    if(enabled&&*enabled=='1'&&user&&now-last_capture>=std::chrono::seconds(1)) {
+        last_capture=now;
+        capture=std::make_unique<VideoCore::UniqueBuffer>(instance.GetDevice(),instance.GetAllocator());
+        vk::BufferCreateInfo buffer_info{.size=u64(extent.width)*extent.height*4,
+            .usage=vk::BufferUsageFlagBits::eTransferDst,.sharingMode=vk::SharingMode::eExclusive};
+        capture->Create(buffer_info,VideoCore::MemoryType::HostCached,&allocation);
+        barrier(vk::ImageLayout::eColorAttachmentOptimal,vk::ImageLayout::eTransferSrcOptimal,
+            vk::AccessFlagBits::eColorAttachmentWrite,vk::AccessFlagBits::eTransferRead);
+        cmdbuf.copyImageToBuffer(image,vk::ImageLayout::eTransferSrcOptimal,capture->buffer,
+            vk::BufferImageCopy{.imageSubresource=MakeImageSubresourceLayers(),
+                .imageExtent={extent.width,extent.height,1}});
+        barrier(vk::ImageLayout::eTransferSrcOptimal,Swapchain::PresentLayout(),
+            vk::AccessFlagBits::eTransferRead,{});
+    } else
+#endif
+    {
     barrier(vk::ImageLayout::eColorAttachmentOptimal, Swapchain::PresentLayout(),
             vk::AccessFlagBits::eColorAttachmentWrite, {});
+    }
     SubmitInfo info{};
     info.AddWait(swapchain.GetImageAcquiredSemaphore());
     info.AddSignal(swapchain.GetPresentReadySemaphore());
@@ -695,6 +767,16 @@ void Presenter::PresentLoadingFrame() {
     }
     // A few frames a second during start-up: waiting keeps semaphores and the swapchain simple.
     present_scheduler.Finish();
+#ifdef GOW3_UWP
+    if(capture) {
+        vmaInvalidateAllocation(instance.GetAllocator(),capture->allocation,0,VK_WHOLE_SIZE);
+        if(auto surface=SDL_CreateSurfaceFrom(extent.width,extent.height,SDL_PIXELFORMAT_RGBA32,
+                allocation.pMappedData,extent.width*4)) {
+            SDL_SaveBMP(surface,(std::string(user)+"/uwp-launcher.bmp").c_str());
+            SDL_DestroySurface(surface);
+        }
+    }
+#endif
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {

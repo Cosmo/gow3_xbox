@@ -4,6 +4,7 @@
 #pragma once
 
 #include <span>
+#include <stdexcept>
 #include <vector>
 #include <boost/container/static_vector.hpp>
 #include "common/assert.h"
@@ -120,6 +121,9 @@ struct Info : InfoPersistent {
     std::span<const u32> user_data;
     std::vector<u32> flattened_ud_buf;
     PersistentSrtInfo srt_info;
+    // Asset precompilation uses explicit descriptor bytes, never guest pointers.
+    // This is transient and deliberately outside serialized InfoPersistent.
+    bool offline_descriptor_snapshot = false;
 
     AttributeFlags loads{};
     AttributeFlags stores{};
@@ -238,6 +242,12 @@ struct Info : InfoPersistent {
     }
 
     void RefreshFlatBuf() {
+        if (offline_descriptor_snapshot) {
+            if (flattened_ud_buf.size() != srt_info.flattened_bufsize_dw) {
+                throw std::runtime_error("Offline descriptor layout requires unsupported resources");
+            }
+            return;
+        }
         flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());

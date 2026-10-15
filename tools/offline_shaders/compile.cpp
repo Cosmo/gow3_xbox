@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Headless experimental replay. Native cache metadata is an oracle, not an
-// asset-derived specialization. No guest process, Vulkan device, or cache writes.
+// Native asset preparation and headless compiler verification. Recorded cache
+// metadata is a test oracle, not an asset-derived specialization. No guest or GPU.
 #include <filesystem>
+#include <windows.h>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -14,17 +15,23 @@
 #include "shader_recompiler/recompiler.h"
 #include "shader_recompiler/specialization.h"
 #include "video_core/amdgpu/regs_depth.h"
+#include "gow3_precompile.h"
 
 namespace fs = std::filesystem;
 using namespace Shader;
 
 extern "C" {
 u32 runtime_disabled_optimizations = 0;
-FILE* gow3_uwp_fopen(const char*, const char*) {
+FILE* gow3_uwp_fopen(const char* path, const char* mode) {
+    if (std::string_view(mode) == "rb") return _wfopen(fs::path(path).c_str(), L"rb");
     std::fputs("Unexpected runtime file access in offline compiler\n", stderr);
     errno = EPERM;
     return nullptr;
 }
+HANDLE gow3_uwp_find(const char* pattern, WIN32_FIND_DATAA* data) {
+    return FindFirstFileExA(pattern, FindExInfoBasic, data, FindExSearchNameMatch, nullptr, 0);
+}
+BOOL gow3_uwp_find_next(HANDLE handle, WIN32_FIND_DATAA* data) { return FindNextFileA(handle, data); }
 }
 
 static std::vector<u8> ReadFile(const fs::path& path) {
@@ -338,6 +345,61 @@ int main(int argc, char** argv) {
         // Same default as the UWP host; this also affects image specialization.
         if (!std::getenv("GOW3_NO_MSAA")) _putenv_s("GOW3_NO_MSAA", "1");
         AmdGpu::no_msaa.store(std::string_view(std::getenv("GOW3_NO_MSAA")) != "0");
+        if (argc == 5 && std::string_view(argv[1]) == "prepare-native") {
+            const auto data = ReadFile(argv[3]);
+            if (data.size() != sizeof(Profile))
+                throw std::runtime_error("Profile size mismatch");
+            Profile profile;
+            std::memcpy(&profile, data.data(), sizeof(profile));
+            Gow3Precompile::Prepare(argv[2], argv[4], profile, [](const auto& p) {
+                if (p.done % 50 == 0 || p.done == p.total)
+                    std::cout << (p.scanning ? "Scanning " : "Compiling ") << p.done << '/'
+                              << p.total << '\n';
+            });
+            return 0;
+        }
+        if (argc == 7 && std::string_view(argv[1]) == "verify-precompiled") {
+            const auto c = ReadCase(argv[3]);
+            const auto profile_data = ReadFile(argv[4]), code_data = ReadFile(argv[5]);
+            if (profile_data.size() != sizeof(Profile) || code_data.size() < 8 ||
+                code_data.size() % 4)
+                throw std::runtime_error("Invalid profile/code");
+            Profile profile;
+            std::memcpy(&profile, profile_data.data(), sizeof(profile));
+            std::vector<u32> code(code_data.size() / 4);
+            std::memcpy(code.data(), code_data.data(), code_data.size());
+            Info info;
+            info.hw_stage = c.recorded.hw_stage;
+            info.sw_stage = c.recorded.sw_stage;
+            info.pgm_hash = c.recorded.pgm_hash;
+            std::vector<u32> spv;
+            if (!Gow3Precompile::TryLoadAt(argv[2], info, c.spec.runtime_info, code, profile, spv))
+                return 4;
+            const auto reference = ReadFile(argv[6]);
+            const bool equal = reference.size() == spv.size() * 4 &&
+                               !std::memcmp(reference.data(), spv.data(), reference.size());
+            // A ready entry must never hide a changed program, runtime variant or profile.
+            auto misses = [&](const auto& changed_code, const auto& runtime, const auto& target) {
+                Info fresh;
+                fresh.pgm_hash = info.pgm_hash;
+                std::vector<u32> output;
+                if (Gow3Precompile::TryLoadAt(argv[2], fresh, runtime, changed_code, target,
+                                              output) ||
+                    !output.empty())
+                    throw std::runtime_error("Precompile cache accepted mismatched inputs");
+            };
+            auto changed_code = code;
+            changed_code.back() ^= 1;
+            misses(changed_code, c.spec.runtime_info, profile);
+            auto changed_runtime = c.spec.runtime_info;
+            changed_runtime.hw.fs.num_samples = 2;
+            misses(code, changed_runtime, profile);
+            auto changed_profile = profile;
+            changed_profile.needs_unorm_fixup = true;
+            misses(code, c.spec.runtime_info, changed_profile);
+            std::cout << (equal ? "cache hit, exact\n" : "cache hit, DIFFERENT\n");
+            return equal ? 0 : 3;
+        }
         if (argc == 3 && std::string_view(argv[1]) == "inspect") {
             Describe(argv[2], ReadCase(argv[2]), true);
             return 0;
@@ -362,6 +424,8 @@ int main(int argc, char** argv) {
             return Compile(argv[3], argv[4], argv[5], {}, argv[6], argv[2]);
         }
         std::cerr << "Usage: gow3-offline-shader list CACHE\n"
+                  << "       gow3-offline-shader prepare-native DUMP PROFILE CACHE\n"
+                  << "       gow3-offline-shader verify-precompiled CACHE META PROFILE GCN REFERENCE\n"
                   << "       gow3-offline-shader compile META PROFILE GCN REFERENCE OUTPUT\n"
                   << "       gow3-offline-shader compile-asset TARGET PSH PROFILE GCN REFERENCE OUTPUT\n"
                   << "       gow3-offline-shader emit-asset TARGET PSH PROFILE GCN OUTPUT\n"

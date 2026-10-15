@@ -416,3 +416,24 @@ Build the `uwp-dialog-input-test` target and run its executable to check the
 actual UWP window pump with a simulated controller and dialog consumer. It covers
 navigation, A/B confirm/cancel, held-button suppression, keyboard repeat and
 keyboard fallback. This does not replace an in-game save/reload check on Xbox.
+
+### Launcher shader preparation
+
+Normal boot now opens a controller/keyboard launcher before starting the game.
+Choose **Start game** or **Precompile shaders** using D-pad/arrow keys and A/Enter.
+Preparation displays scanning and compilation progress, then returns to the
+launcher with the prepared count. Unsupported shaders compile during gameplay.
+
+The current CUSA01715 subset covers 154 resource-free fragment shader identities
+(40 distinct programs), including asset-derived input linkage. It checks three
+attachment variants per identity and reuses valid saved results on later runs.
+Textured fragments and vertex shaders are skipped. Preparation is native C++;
+no Python installation or prior playthrough is needed. See
+`tools/offline_shaders/README.md` for count definitions and validation.
+
+Results are app-local at `user/shader/precompiled/CUSA01715`. Runtime lookup
+requires matching code, specialization and renderer profile; a miss or invalid
+file uses the existing compiler. Driver/pipeline compilation can still occur.
+Private `graphics-debug.txt` may set `GOW3_PRECOMPILE_AUTORUN=1` for a bounded
+launcher smoke test; the default requires selecting the action. Existing
+`GOW3_UWP_CAPTURE=1` also writes `user/uwp-launcher.bmp` for launcher/progress QA.
