@@ -51,6 +51,19 @@ graphics pipeline creation can still happen on first use. Original shaders
 outside the scanned WAD format and unsupported live variants are not covered
 by the inventory total. Complete elimination of first-use stalls is not claimed.
 
+Xbox opening-combat testing recorded 479 synchronous prepared-library hits with
+the ordinary cache disabled. Normal caching and a separate run without remote
+screenshots also reached combat, but frame-time variability remained. Median
+five-second FPS snapshots in the 100–180 second window were approximately 32,
+30 and 33 respectively; these are not frame-identical scenes or a before/after
+build benchmark. Neither cache disabling nor screenshot traffic alone explains
+the reported slowdown. Performance needs a controlled comparison with the prior
+build; successful shader preparation does not establish a performance gain.
+Private measurements are `xbox-fps-cache-comparison.json` and
+`xbox-fps-no-capture.json`. Use `xbox-autostart.ps1 -NoCapture -StopAfter` for
+bounded tests without screenshot traffic. All test settings/input are restored
+and the app is closed after each run.
+
 ## How it scales
 
 The native scanner recovers register headers, resource usage slots, fetch

@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory)][string]$App,
     [ValidateRange(1,600)][int]$Seconds=240,
     [string]$Console='default',
+    [switch]$NoCapture,
     [switch]$StopAfter
 )
 . (Join-Path $PSScriptRoot 'Xbox.Common.ps1')
@@ -26,7 +27,8 @@ $deadline=[DateTime]::UtcNow.AddSeconds($Seconds)
 $nextCapture=[DateTime]::UtcNow
 $captureIndex=0
 $buttonIndex=0
-Write-Output "Alternating A and X every 0.5 seconds for $Seconds seconds; captures: $output"
+Write-Output "Alternating A and X every 0.5 seconds for $Seconds seconds; evidence: $output"
+if($NoCapture) { Write-Output 'Screenshot capture disabled for performance measurement.' }
 try {
     while([DateTime]::UtcNow -lt $deadline) {
         $step=[Diagnostics.Stopwatch]::StartNew()
@@ -34,7 +36,7 @@ try {
         $buttonIndex=($buttonIndex+1)%$buttons.Count
         Start-Sleep -Milliseconds 200
         Send-Buttons $neutral
-        if([DateTime]::UtcNow -ge $nextCapture) {
+        if(!$NoCapture -and [DateTime]::UtcNow -ge $nextCapture) {
             $path=Join-Path $output ('frame-{0:D2}.png' -f ($captureIndex%12))
             if(Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
             $null=Invoke-XboxRequest $portal GET '/ext/screenshot' @{} $null @(200) $path
