@@ -64,4 +64,5 @@ add_custom_command(TARGET gow3_uwp POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GOW3_PTHREAD}/libwinpthread-1.dll" "${GOW3_LAYOUT}"
   COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_PTHREAD}/COPYING" "${GOW3_LAYOUT}/ThirdParty/winpthread-COPYING.txt"
   COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_LIST_DIR}/AppxManifest.xml" "${GOW3_LAYOUT}"
-  COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_PREPARED}/boot-linked.bin" "${GOW3_PREPARED}/content.bin" "${GOW3_LAYOUT}/Prepared")
+  COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_PREPARED}/boot-linked.bin" "${GOW3_PREPARED}/content.bin"
+    "${GOW3_PREPARED}/patches-native.bin" "${GOW3_PREPARED}/patches-720p.bin" "${GOW3_LAYOUT}/Prepared")

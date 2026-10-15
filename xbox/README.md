@@ -252,3 +252,25 @@ It also checks padded texture uploads/readbacks for R8, RGBA8, BC1 and BC3. All 
 pass on PC UWP with the Dozen array-stride fix: `bufferImageHeight` must determine
 the buffer offset of later array layers. These checks do not establish that the
 later gameplay rendering is correct; that still needs visual comparison.
+
+### Gameplay texture fix (15 October)
+
+The UWP launcher now enables `GOW3_READBACK_LINEAR=1`, matching `run.py`.
+The game reads GPU-written linear and small images while managing its textures.
+Without these readbacks, valid compressed asset bytes become paired with incorrect
+texture descriptors: Gaia shows rainbow stripes, foliage breaks up, and enemies
+appear black. PC UWP gameplay captures with readbacks enabled show correct terrain,
+foliage, and enemy textures. Disabling mipmaps and renderer caches did not repair it.
+
+The build also prepares the existing native and 720p game patches from the game's
+validated patch profile. `GOW3_UWP_RENDER_RES=720p` in private `graphics-debug.txt`
+selects 1280x720 at the next launch. Native remains the default. Both profiles
+include the video-arena correction and require a 7104 MiB virtual direct-memory
+pool; physical memory is still committed on demand and remains subject to the
+Xbox app budget.
+
+`pc-autostart.ps1 -Capture -StopAfter` retains only the latest twelve five-second
+captures and closes its own test process when the measurement ends. Optional
+texture inspection compares guest memory, tiled GPU input, detiled output, and
+image readback. Set `GOW3_UWP_TEXTURE_DUMP=1`; optionally restrict it with a
+comma-separated `GOW3_UWP_TEXTURE_ADDRESSES` list. Dumps stay in private LocalState.

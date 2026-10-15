@@ -84,7 +84,9 @@ static void loader() {
         if(separator==std::string::npos) continue;
         auto key=line.substr(0,separator),value=line.substr(separator+1);
         if(key=="DZN_DEBUG"||key=="DZN_MAX_SHADER_MODEL"||key=="DZN_MAX_D3D12_OPTIONS"||
-           key=="GOW3_DUMP_SHADERS"||key=="GOW3_UWP_CAPTURE"||key=="GOW3_NO_MSAA") {
+           key=="GOW3_DUMP_SHADERS"||key=="GOW3_UWP_CAPTURE"||key=="GOW3_NO_MSAA"||
+           key=="GOW3_UWP_TEXTURE_DUMP"||key=="GOW3_UWP_RENDER_RES"||key=="GOW3_DRAW_PIPE"||
+           key=="GOW3_UWP_TEXTURE_ADDRESSES") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }
@@ -152,15 +154,25 @@ static void loader() {
     std::string content=package+"\\Prepared\\content.bin";
     _putenv_s("GOW3_CONFIG",(user+"\\graphics.cfg").c_str());
     _putenv_s("GOW3_PAD_FILE",(winrt::to_string(local)+"\\controls.txt").c_str());
+    _putenv_s("GOW3_CAPTURE_TRIGGER",(winrt::to_string(local)+"\\capture.txt").c_str());
+    _putenv_s("GOW3_TOGGLE_FILE",(winrt::to_string(local)+"\\toggles.txt").c_str());
     _putenv_s("GOW3_UPSCALER","off");
+    _putenv_s("GOW3_READBACK_LINEAR","1");
     if(!std::getenv("GOW3_NO_MSAA")) _putenv_s("GOW3_NO_MSAA","1");
-    _putenv_s("GOW3_DRAW_PIPE","1");
+    if(!std::getenv("GOW3_DRAW_PIPE")) _putenv_s("GOW3_DRAW_PIPE","1");
     _putenv_s("GOW3_VK_RECORD_THREAD","0");
     _putenv_s("GOW3_COPY_THREADS","0");
     _putenv_s("GOW3_PREP_WORKERS","0");
     _putenv_s("GOW3_ASYNC_SHADERS","0");
     _putenv_s("GOW3_PIPELINE_CACHE","0");
-    std::puts("UWP renderer baseline: ordered draw worker, synchronous copies and shader selection");
+    const char* render_res=std::getenv("GOW3_UWP_RENDER_RES");
+    const bool use_720p=render_res&&std::strcmp(render_res,"720p")==0;
+    std::string patches=package+"\\Prepared\\patches-"+(use_720p?"720p":"native")+".bin";
+    _putenv_s("GOW3_DMEM_MB","7104");
+    _putenv_s("GOW3_ENGINE_FPS","60");
+    _putenv_s("GOW3_VBLANK_HZ","60");
+    std::printf("UWP graphics patches: %s, texture arena fix, 7104 MiB virtual direct pool, 60 Hz engine\n",use_720p?"720p":"native");
+    std::printf("UWP renderer baseline: draw pipe %s, synchronous copies and shader selection\n",std::getenv("GOW3_DRAW_PIPE"));
     std::puts("Running the existing loader and runtime with native UWP audio output.");
     std::vector<std::string> arguments={"gow3-uwp",boot};
 #ifdef GOW3_LINK_RENDERER
@@ -168,7 +180,7 @@ static void loader() {
 #else
     arguments.push_back("--cpu-only");
 #endif
-    arguments.insert(arguments.end(),{"--app0",dump,"--user",user,"--content-profile",content});
+    arguments.insert(arguments.end(),{"--app0",dump,"--user",user,"--content-profile",content,"--patches",patches});
     if(mode=="imports") arguments.push_back("--check-imports");
     std::vector<char*> args;
     for(auto& argument:arguments) args.push_back(argument.data());

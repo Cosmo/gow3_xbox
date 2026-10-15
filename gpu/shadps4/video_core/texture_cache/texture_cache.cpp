@@ -23,6 +23,9 @@
 #include "video_core/texture_cache/host_compatibility.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/tile_manager.h"
+#ifdef GOW3_UWP
+#include "texture_probe.h"
+#endif
 
 namespace VideoCore {
 
@@ -1263,6 +1266,9 @@ void TextureCache::RefreshImage(Image& image) {
     }
 
     runtime.UploadImage(&image, buffer, image_copies);
+#ifdef GOW3_UWP
+    Gow3Uwp::InspectTexture(runtime,image,buffer,offset,in_buffer,in_offset);
+#endif
 }
 
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
