@@ -61,6 +61,38 @@ recorded metadata file only to simulate live specialization in verification.
 
 ## Native launcher preparation
 
+The expanded native preparation path now builds **48,772 fragment identities**
+in 146,316 attachment-variant checks. A fresh run produces 81,619 distinct compiled
+records and shares 64,697 aliases in a single 1.84 GiB library with a 6.7 MiB index.
+A second run reuses all 146,316 entries. The asset scanner, compilation, descriptor
+layout capture, cache writer and runtime resolver are native C++; no gameplay
+metadata is used during preparation. Vertex templates remain a headless batch
+experiment at this milestone.
+
+The library is `templates.gtp` plus `templates.gti` under the same app-local cache
+directory. A completed inventory/profile match reuses it; an interrupted write
+stays in `.tmp` files and is rebuilt. Live lookup checks identity, original code,
+runtime key, profile, bounds, checksum and static resource specialization. Only
+explicitly deferred fields may differ. Read-only null resources resolve to zero;
+unsupported descriptor shapes and writable-resource changes fall back normally.
+Asset-derived descriptor walkers are registered only for shaders actually used,
+deduplicate layouts, follow current guest pointers, and recover from null tables.
+
+The real lookup path hits **222 of 270 available fragment reference states**;
+all 222 resulting outputs validate and match the reference structurally after
+optimization. The remaining 48 are cache misses. This test does not use an allowlist
+of encountered hashes: preparation still covers the full extracted fragment
+inventory. All 27,207 distinct fragment and 740 vertex batch outputs independently
+passed the official Vulkan 1.2 validator. The optional standalone
+`validate_batch.cpp` tool links against SPIRV-Tools only for this verification.
+Private evidence: `native-templates-01`, `native-template-reuse-01`,
+`native-template-lookup-01`, `native-template-compare-01`, and the two whole-library
+batch `vulkan-validation.txt` reports.
+
+The Xbox deployment still has the earlier 154-entry implementation. The following
+description documents that earlier deployed milestone; the expanded implementation
+must pass desktop gameplay validation before replacing it on the console.
+
 The launcher invokes the C++ asset scanner and the renderer's C++ shader compiler
 directly. Python is used only for research and comparison tools. Preparation
 requires the installed dump and the current renderer profile, without recorded

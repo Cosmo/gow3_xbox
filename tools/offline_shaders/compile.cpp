@@ -596,7 +596,8 @@ int main(int argc, char** argv) {
             });
             return 0;
         }
-        if (argc == 7 && std::string_view(argv[1]) == "verify-precompiled") {
+        if (argc == 7 && (std::string_view(argv[1]) == "verify-precompiled" ||
+                          std::string_view(argv[1]) == "emit-precompiled")) {
             const auto c = ReadCase(argv[3]);
             const auto profile_data = ReadFile(argv[4]), code_data = ReadFile(argv[5]);
             if (profile_data.size() != sizeof(Profile) || code_data.size() < 8 ||
@@ -610,9 +611,21 @@ int main(int argc, char** argv) {
             info.hw_stage = c.recorded.hw_stage;
             info.sw_stage = c.recorded.sw_stage;
             info.pgm_hash = c.recorded.pgm_hash;
+            info.user_data = std::span(c.flat).first(c.spec.runtime_info.props.num_user_data);
+            info.flattened_ud_buf = c.flat;
+            info.offline_descriptor_snapshot = true;
             std::vector<u32> spv;
             if (!Gow3Precompile::TryLoadAt(argv[2], info, c.spec.runtime_info, code, profile, spv))
                 return 4;
+            if (std::string_view(argv[1]) == "emit-precompiled") {
+                if (fs::exists(argv[6])) throw std::runtime_error("Resolved output must be new");
+                std::ofstream output(argv[6], std::ios::binary);
+                output.write(reinterpret_cast<const char*>(spv.data()), spv.size() * 4);
+                output.close();
+                if (!output) throw std::runtime_error("Cannot write prepared shader resolution");
+                std::cout << "Prepared template cache hit; no shader translation\n";
+                return 0;
+            }
             const auto reference = ReadFile(argv[6]);
             const bool equal = reference.size() == spv.size() * 4 &&
                                !std::memcmp(reference.data(), spv.data(), reference.size());

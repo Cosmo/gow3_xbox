@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gow3_precompile.h"
+#include "gow3_shader_inputs.h"
+#include "gow3_template_cache.h"
 #include "common/path_util.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -13,6 +15,7 @@
 #include <fmt/format.h>
 #include <fstream>
 #include <memory>
+#include <map>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -44,9 +47,9 @@ u16 U16(const u8* p) {
     return v;
 }
 struct Candidate {
-    u64 hash{}, code_hash{};
+    u64 hash{}, code_hash{}, signature{};
     std::array<u32, 13> regs{};
-    std::vector<u32> parameters, code;
+    std::vector<u32> parameters, usages, code;
 };
 struct Program {
     size_t start{}, footer{};
@@ -91,10 +94,8 @@ bool VertexExports(std::span<const u8> data, const Program& p,
 }
 std::optional<Candidate> Fragment(std::span<const u8> data, const Program& p,
                                   const std::unordered_map<u32, u32>& exports) {
-    if (p.usages)
-        return {};
     for (u32 count = 0; count <= 32; ++count) {
-        const size_t size = 52 + ((count * 2 + 3) & ~3u);
+        const size_t size = 52 + p.usages * 4 + ((count * 2 + 3) & ~3u);
         if (size > p.start)
             continue;
         const auto* h = data.data() + p.start - size;
@@ -104,16 +105,24 @@ std::optional<Candidate> Fragment(std::span<const u8> data, const Program& p,
         Candidate c;
         c.hash = p.hash;
         std::memcpy(c.regs.data(), h, 52);
+        c.usages.resize(p.usages);
+        std::memcpy(c.usages.data(), h + 52, p.usages * 4);
         for (u32 i = 0; i < count; ++i) {
-            const u16 semantic = U16(h + 52 + i * 2);
+            const u16 semantic = U16(h + 52 + p.usages * 4 + i * 2);
             const auto found = exports.find(semantic & 255);
-            if (semantic >> 8 || found == exports.end() || found->second >= 32)
+            if ((semantic & 0xf700) || found == exports.end() || found->second >= 32)
                 return {};
             c.parameters.push_back(found->second);
         }
         c.code.resize(p.bytes / 4);
         std::memcpy(c.code.data(), data.data() + p.start, p.bytes);
         c.code_hash = XXH3_64bits(c.code.data(), p.bytes);
+        std::vector<u32> signature(c.regs.begin() + 2, c.regs.end());
+        signature.insert(signature.end(), c.usages.begin(), c.usages.end());
+        signature.insert(signature.end(), c.parameters.begin(), c.parameters.end());
+        signature.push_back(u32(c.code_hash));
+        signature.push_back(u32(c.code_hash >> 32));
+        c.signature = XXH3_64bits(signature.data(), signature.size() * 4);
         return c;
     }
     return {};
@@ -393,19 +402,42 @@ Summary Prepare(const fs::path& dump, const fs::path& cache, const Profile& prof
     result.skipped = all.size() - candidates.size();
     std::unordered_set<u64> distinct;
     fs::create_directories(cache);
+    // Hash a deterministic inventory, including aliases and all compiler inputs.
+    // A completed compatible library can be reused without reading gigabytes of
+    // SPIR-V during preparation; individual records are checked on actual use.
+    std::vector<std::array<u64, 2>> inventory;
+    for (const auto& [hash, c] : candidates) {
+        distinct.insert(c.code_hash);
+        inventory.push_back({hash, c.signature});
+    }
+    std::sort(inventory.begin(), inventory.end());
+    const u64 library = XXH3_64bits(inventory.data(), inventory.size() * sizeof(inventory[0]));
+    result.distinct_programs = distinct.size();
     progress.scanning = false;
     progress.done = 0;
     progress.total = candidates.size() * 3;
+    u32 previous_entries = 0;
+    if (TemplatesReady(cache, profile, library, previous_entries) && previous_entries == progress.total) {
+        result.prepared_entries = candidates.size();
+        result.already_cached = previous_entries;
+        progress.done = progress.total;
+        if (update) update(progress);
+        std::printf("Precompile reused: %u shader identities, %u prepared variants\n",
+                    result.prepared_entries, previous_entries);
+        return result;
+    }
+    TemplateWriter writer(cache, profile, library);
+    std::map<std::array<u64, 2>, TemplateLocation> compiled;
     Pools pools;
     for (const auto& [hash, c] : candidates) {
-        distinct.insert(c.code_hash);
         bool ready = false;
         for (u32 target = 0; target < 3; ++target) {
             try {
                 auto runtime = Runtime(c, target);
-                std::vector<u32> previous;
-                Header header;
-                if (Read(cache, hash, c.code_hash, runtime, profile, previous, header)) {
+                const auto key = RuntimeKey(runtime);
+                const std::array<u64, 2> identity{c.signature, key};
+                if (auto found = compiled.find(identity); found != compiled.end()) {
+                    writer.Alias(found->second, hash);
                     ++result.already_cached;
                     ready = true;
                 } else {
@@ -414,20 +446,20 @@ Summary Prepare(const fs::path& dump, const fs::path& cache, const Profile& prof
                     info.sw_stage = SwStage::Fragment;
                     info.pgm_hash = hash;
                     info.pgm_base = 0;
-                    std::array<u32, 16> user{};
-                    info.user_data = std::span(user).first(runtime.props.num_user_data);
-                    info.flattened_ud_buf.resize(16);
+                    AssetInputs inputs(c.usages, 0, true);
+                    info.offline_memory = &inputs;
+                    info.user_data = inputs.UserData().first(runtime.props.num_user_data);
                     info.offline_descriptor_snapshot = true;
                     Gcn::FetchShaderSnapshot fetch{.info = &info};
                     Gcn::ScopedFetchShaderSnapshot scope(fetch);
                     auto ir = TranslateProgram(c.code, pools, info, runtime, profile);
-                    if (!info.buffers.empty() || !info.images.empty() || !info.samplers.empty() ||
-                        !info.fmasks.empty() || info.ud_mask.mask)
-                        throw std::runtime_error(
-                            "Shader requires unsupported specialization inputs");
+                    if (!info.fmasks.empty())
+                        throw std::runtime_error("Shader needs an unsupported FMASK variant");
                     Backend::Bindings binding{};
                     auto spirv = Backend::SPIRV::EmitSPIRV(profile, runtime, ir, binding);
-                    Write(cache, c, runtime, profile, info, spirv);
+                    const auto location = writer.Write(c.code_hash, key, info, spirv);
+                    writer.Alias(location, hash);
+                    compiled.emplace(identity, location);
                     ++result.compiled;
                     ready = true;
                 }
@@ -444,7 +476,7 @@ Summary Prepare(const fs::path& dump, const fs::path& cache, const Profile& prof
         if (ready)
             ++result.prepared_entries;
     }
-    result.distinct_programs = distinct.size();
+    writer.Finish();
     std::printf("Precompile complete: %u shader entries, %u distinct programs, "
                 "%u compiled, %u cached, %u skipped, %u failed\n",
                 result.supported, result.distinct_programs, result.compiled, result.already_cached,
@@ -462,9 +494,9 @@ bool TryLoadAt(const fs::path& cache, Info& info, const RuntimeInfo& runtime,
         return false;
     Header header;
     try {
-        if (!Read(cache, info.pgm_hash, XXH3_64bits(code.data(), code.size_bytes()), runtime,
-                  profile, spirv, header))
-            return false;
+        const auto code_hash = XXH3_64bits(code.data(), code.size_bytes());
+        if (!Read(cache, info.pgm_hash, code_hash, runtime, profile, spirv, header))
+            return TryTemplate(cache, RuntimeKey(runtime), code_hash, info, runtime, profile, spirv);
     } catch (const std::exception&) {
         return false;
     }

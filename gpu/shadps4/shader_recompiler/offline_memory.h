@@ -30,4 +30,8 @@ struct SrtRead {
     u32 destination = 0;
 };
 using SrtReadPlan = std::vector<SrtRead>;
+struct PersistentSrtInfo;
+// Register a validated asset-derived read layout against current guest tables.
+// Called only for shaders actually used; compilation never dereferences a guest.
+PersistentSrtInfo RegisterSrtReadPlan(const SrtReadPlan& plan, u32 flat_words, u32 user_words);
 } // namespace Shader

@@ -798,6 +798,78 @@ void SimplifyReadConstAddressAdd(IR::Inst& inst) {
 
 } // Anonymous namespace
 
+} // namespace Shader::Optimization
+
+namespace Shader {
+PersistentSrtInfo RegisterSrtReadPlan(const SrtReadPlan& plan, u32 flat_words, u32 user_words) {
+    if (user_words > 16 || flat_words < 16 || flat_words > 16400 || plan.size() > 16384)
+        throw std::runtime_error("Invalid prepared descriptor layout");
+    std::string key(reinterpret_cast<const char*>(&flat_words), sizeof(flat_words));
+    std::vector<bool> destinations(flat_words);
+    for (const auto& read : plan) {
+        if (read.pointers.empty() || read.pointers.size() > 16 ||
+            read.pointers[0] + 1 >= user_words || read.destination < 16 ||
+            read.destination >= flat_words || destinations[read.destination] ||
+            read.offset > 1024 * 1024)
+            throw std::runtime_error("Invalid prepared descriptor read");
+        destinations[read.destination] = true;
+        const u32 count = read.pointers.size();
+        key.append(reinterpret_cast<const char*>(&count), 4);
+        for (u32 offset : read.pointers) {
+            if (offset > 1024 * 1024) throw std::runtime_error("Prepared pointer offset exceeds limit");
+            key.append(reinterpret_cast<const char*>(&offset), 4);
+        }
+        key.append(reinterpret_cast<const char*>(&read.offset), 4);
+        key.append(reinterpret_cast<const char*>(&read.destination), 4);
+    }
+    PersistentSrtInfo result;
+    result.flattened_bufsize_dw = flat_words;
+    if (plan.empty()) {
+        if (flat_words != 16) throw std::runtime_error("Prepared layout has missing reads");
+        return result;
+    }
+    if (std::count(destinations.begin() + 16, destinations.end(), true) != flat_words - 16)
+        throw std::runtime_error("Prepared layout has holes");
+    std::scoped_lock lock{g_srt_codegen_mutex};
+    static std::unordered_map<std::string, PersistentSrtInfo> registered;
+    if (auto found = registered.find(key); found != registered.end()) return found->second;
+    auto& c = g_srt_codegen;
+    // A rejected template must leave room for the ordinary shader compiler.
+    if (c.getSize() + plan.size() * 512 + 128 > 30_MB)
+        throw std::runtime_error("Prepared descriptor walker pool is full");
+    if (!g_srt_codegen_start) {
+        g_srt_codegen_start = c.getCurr();
+        Core::Signals::Instance()->RegisterAccessViolationHandler(SrtWalkerSignalHandler, 1);
+    }
+    result.walker_func = c.getCurr<PFN_SrtWalker>();
+    c.mov(r11, rdi);
+    for (const auto& read : plan) {
+        Xbyak::Label absent, done;
+        c.mov(rdi, r11);
+        for (u32 offset : read.pointers) {
+            c.mov(rdi, ptr[rdi + u64(offset) * 4]);
+            c.mov(r10, 0xffffffffffffULL);
+            c.and_(rdi, r10);
+            c.test(rdi, rdi);
+            c.jz(absent, Xbyak::CodeGenerator::T_NEAR);
+        }
+        c.mov(r10d, dword[rdi + u64(read.offset) * 4]);
+        c.jmp(done, Xbyak::CodeGenerator::T_NEAR);
+        c.L(absent);
+        c.xor_(r10d, r10d);
+        c.L(done);
+        c.mov(dword[rsi + u64(read.destination) * 4], r10d);
+    }
+    c.ret();
+    c.ready();
+    result.walker_func_size = c.getCurr() - reinterpret_cast<const u8*>(result.walker_func);
+    registered.emplace(std::move(key), result);
+    return result;
+}
+} // namespace Shader
+
+namespace Shader::Optimization {
+
 void FlattenExtendedUserdataPass(IR::Program& program) {
     auto& post_order = program.post_order_blocks;
     PassInfo pass_info;
