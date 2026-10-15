@@ -14,14 +14,14 @@ static void Apartment() {
         initialized=true;
     }
 }
-extern "C" int gow3_uwp_gamepad(uint32_t* buttons,uint8_t axes[6]) {
+static int ReadGamepad(uint32_t* buttons,uint8_t axes[6],bool chord) {
     try {
         Apartment();
         auto pads=winrt::Windows::Gaming::Input::Gamepad::Gamepads();
         if(!pads.Size()) return 0;
         auto reading=pads.GetAt(0).GetCurrentReading();
         using B=winrt::Windows::Gaming::Input::GamepadButtons;
-        if(Gow3Uwp::Overlay::ControllerChord((reading.Buttons&B::View)!=B::None,
+        if(chord&&Gow3Uwp::Overlay::ControllerChord((reading.Buttons&B::View)!=B::None,
             (reading.Buttons&B::Menu)!=B::None,reading.LeftTrigger,reading.RightTrigger)) {
             *buttons=0;
             axes[0]=axes[1]=axes[2]=axes[3]=128;axes[4]=axes[5]=0;
@@ -48,6 +48,13 @@ extern "C" int gow3_uwp_gamepad(uint32_t* buttons,uint8_t axes[6]) {
         if(!reported) {std::fprintf(stderr,"Xbox gamepad API: 0x%08x\n",static_cast<unsigned>(e.code()));reported=true;}
         return 0;
     }
+}
+extern "C" int gow3_uwp_gamepad(uint32_t* buttons,uint8_t axes[6]) {
+    return ReadGamepad(buttons,axes,true);
+}
+extern "C" int gow3_uwp_dialog_gamepad(uint32_t* buttons,uint8_t axes[6]) {
+    // Dialog polling must not toggle the performance chord a second time.
+    return ReadGamepad(buttons,axes,false);
 }
 extern "C" void gow3_uwp_vibration(uint8_t large,uint8_t small) {
     try {

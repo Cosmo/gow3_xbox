@@ -376,9 +376,26 @@ static void replay_sample(PadData *d) {
 /* After the menu or the text dialog closes, buttons still held (the Cross that accepted a
  * name) stay hidden until released: the game would take them as a new press. */
 static int hold_after_capture;
+#ifdef GOW3_UWP
+/* The UWP window has no SDL controller events. Dialogs sample the same physical
+ * and scripted buttons independently of guest reads, which may pause in a save. */
+uint32_t runtime_pad_dialog_buttons(void) {
+    uint32_t buttons=0; uint8_t axes[6]={128,128,128,128,0,0};
+    gow3_uwp_dialog_gamepad(&buttons,axes);
+    pthread_mutex_lock(&lock);
+    read_inject(); buttons|=injected.buttons;
+    pthread_mutex_unlock(&lock);
+    return buttons;
+}
+#endif
 static void sample(PadData *d) {
     sample_host(d);
-    if (gow3gpu_overlay_captures_input()) { hold_after_capture=1; click.side=-1; return; }
+    if (gow3gpu_overlay_captures_input()) {
+        hold_after_capture=1; click.side=-1;
+        d->buttons=0; d->left_x=d->left_y=d->right_x=d->right_y=128;
+        d->l2=d->r2=0; d->touch_count=0;
+        return;
+    }
     record_sample(d); /* the click sources as they are: a replay plays them again */
     read_inject();
     replay_sample(d);

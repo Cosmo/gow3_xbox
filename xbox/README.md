@@ -401,3 +401,18 @@ and a half-second target between presses. `xbox-autostart.ps1 -App <full-package
 screenshots in ignored `.local/transfers`. Network and screenshot time can
 extend an Xbox input step. Both helpers release scripted input on exit; use
 `-StopAfter` to close the measured game.
+
+### Save-dialog input (15 October)
+
+The UWP window now polls controller and scripted button edges for the host save
+list independently of guest pad reads. Previously its event pump only slept:
+gameplay input worked, but the SDL-based save list never received A/B or D-pad
+events. CoreWindow forwards Enter, Escape and navigation keys to that same list.
+Held buttons cannot accept a newly opened dialog, and guest input stays neutral
+while the overlay captures it. Dialog polling does not process the performance
+overlay chord a second time.
+
+Build the `uwp-dialog-input-test` target and run its executable to check the
+actual UWP window pump with a simulated controller and dialog consumer. It covers
+navigation, A/B confirm/cancel, held-button suppression, keyboard repeat and
+keyboard fallback. This does not replace an in-game save/reload check on Xbox.

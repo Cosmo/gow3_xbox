@@ -40,6 +40,7 @@ extern "C" uint64_t gow3_uwp_app_memory_limit() {
 #ifdef GOW3_BUILD_GRAPHICS
 #include "../graphics/present_bridge.h"
 #include "../graphics/overlay.h"
+#include "input.h"
 static winrt::agile_ref<winrt::Windows::UI::Core::CoreWindow> core_window;
 extern "C" IUnknown* gow3_uwp_core_window() {
     auto window=core_window.get();
@@ -237,7 +238,12 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
         window.KeyDown([](auto const&,auto const& event) {
             if(event.VirtualKey()==winrt::Windows::System::VirtualKey::F3&&!event.KeyStatus().WasKeyDown) {
                 event.Handled(true);Gow3Uwp::Overlay::Toggle();
+            } else if(gow3_uwp_dialog_key(uint32_t(event.VirtualKey()),1,event.KeyStatus().WasKeyDown)) {
+                event.Handled(true);
             }
+        });
+        window.KeyUp([](auto const&,auto const& event) {
+            if(gow3_uwp_dialog_key(uint32_t(event.VirtualKey()),0,0)) event.Handled(true);
         });
 #endif
 #ifdef GOW3_BUILD_GRAPHICS
