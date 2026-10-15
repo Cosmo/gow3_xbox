@@ -86,7 +86,8 @@ static void loader() {
         if(key=="DZN_DEBUG"||key=="DZN_MAX_SHADER_MODEL"||key=="DZN_MAX_D3D12_OPTIONS"||
            key=="GOW3_DUMP_SHADERS"||key=="GOW3_UWP_CAPTURE"||key=="GOW3_NO_MSAA"||
            key=="GOW3_UWP_TEXTURE_DUMP"||key=="GOW3_UWP_RENDER_RES"||key=="GOW3_DRAW_PIPE"||
-           key=="GOW3_UWP_TEXTURE_ADDRESSES") {
+           key=="GOW3_UWP_TEXTURE_ADDRESSES"||key=="GOW3_DEFERRED_READBACK"||
+           key=="GOW3_STALE_READBACK"||key=="GOW3_ASYNC_SHADERS"||key=="GOW3_PIPELINE_CACHE") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }
@@ -163,8 +164,8 @@ static void loader() {
     _putenv_s("GOW3_VK_RECORD_THREAD","0");
     _putenv_s("GOW3_COPY_THREADS","0");
     _putenv_s("GOW3_PREP_WORKERS","0");
-    _putenv_s("GOW3_ASYNC_SHADERS","0");
-    _putenv_s("GOW3_PIPELINE_CACHE","0");
+    if(!std::getenv("GOW3_ASYNC_SHADERS")) _putenv_s("GOW3_ASYNC_SHADERS","0");
+    if(!std::getenv("GOW3_PIPELINE_CACHE")) _putenv_s("GOW3_PIPELINE_CACHE","0");
     const char* render_res=std::getenv("GOW3_UWP_RENDER_RES");
     const bool use_720p=render_res&&std::strcmp(render_res,"720p")==0;
     std::string patches=package+"\\Prepared\\patches-"+(use_720p?"720p":"native")+".bin";
