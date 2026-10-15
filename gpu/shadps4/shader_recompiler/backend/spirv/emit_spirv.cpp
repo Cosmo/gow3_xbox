@@ -147,11 +147,31 @@ void EmitInst(EmitContext& ctx, IR::Inst* inst) {
     switch (inst->GetOpcode()) {
 #define OPCODE(name, result_type, ...)                                                             \
     case IR::Opcode::name:                                                                         \
-        return Invoke<&Emit##name>(ctx, inst);
+        Invoke<&Emit##name>(ctx, inst); break;
 #include "shader_recompiler/ir/opcodes.inc"
 #undef OPCODE
+    default: UNREACHABLE_MSG("Invalid opcode {}", inst->GetOpcode());
     }
-    UNREACHABLE_MSG("Invalid opcode {}", inst->GetOpcode());
+#ifdef GOW3_UWP
+    // Template reads preserve the normal UWP zero result for an absent
+    // resource. Runtime binds its existing safe fallback descriptors; stores
+    // still require a present resource when matching a prepared variant.
+    const bool parametric=ctx.info.offline_memory&&ctx.info.offline_memory->Parametric();
+    const auto type=IR::TypeOf(inst->GetOpcode());
+    if(parametric&&type!=IR::Type::Void&&inst->NumArgs()&&inst->Arg(0).IsImmediate()) {
+        const u32 handle=inst->Arg(0).U32();
+        std::optional<u32> slot;
+        if(name.starts_with("LoadBuffer")&&handle<ctx.info.buffers.size()&&!ctx.info.buffers[handle].IsSpecial())
+            slot=OfflineSlot::BufferPresent+handle;
+        else if(name.starts_with("Image")&&(handle&0xffff)<ctx.info.images.size())
+            slot=OfflineSlot::ImagePresent+(handle&0xffff);
+        if(slot) {
+            const Id flag=EmitOfflineConstant(ctx,1,*slot);
+            const Id present=ctx.OpINotEqual(ctx.U1[1],flag,ctx.ConstU32(0u));
+            inst->SetDefinition<Id>(ctx.OpSelect(TypeId(ctx,type),present,inst->Definition<Id>(),ctx.ConstantNull(TypeId(ctx,type))));
+        }
+    }
+#endif
 }
 
 Id TypeId(const EmitContext& ctx, IR::Type type) {

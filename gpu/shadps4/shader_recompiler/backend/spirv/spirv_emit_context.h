@@ -43,6 +43,7 @@ public:
     ~EmitContext();
 
     Id Def(const IR::Value& value);
+    std::unordered_map<u32,Id> offline_constants;
 
     void DefineBufferProperties();
     void DefineAmdPerVertexAttribs();

@@ -19,9 +19,18 @@ class EmitTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('<4I', recipe, 20 + size), (3, 2, 0, 1))
 
     def test_unknown_flags_and_out_of_range_parameters_are_rejected(self):
-        for shader, parameters in ((fragment(inputs=(0x080f,)), (0,)), (fragment(), (32,))):
+        for shader, parameters in ((fragment(inputs=(0x040f,)), (0,)), (fragment(), (32,))):
             with self.assertRaises(ValueError):
                 emit.encode_recipe(shader, parameters)
+
+    def test_linear_interpolation_flag_preserves_asset_parameter_linkage(self):
+        shader = fragment(inputs=(0x080f,))
+        material = dict(pairs=[dict(fragment=shader['shader_hash'], interpolation=dict(
+            parameter_indices=[3], semantic_flags=[8]))])
+        selected, unsupported = emit.select_candidates([shader], material, resources=True)
+        self.assertEqual([(s['shader_hash'], p) for s, p in selected], [(shader['shader_hash'], (3,))])
+        self.assertFalse(unsupported)
+        self.assertEqual(struct.unpack_from('<H', emit.encode_recipe(shader, (3,)), 20 + 52), (0x080f,))
 
     def test_resource_recipe_keeps_asset_usage_slots_before_semantics(self):
         shader = fragment()

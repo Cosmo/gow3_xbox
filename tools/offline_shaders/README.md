@@ -13,6 +13,52 @@ and compilation progress. The supported asset-only subset produces runtime-ready
 entries; textured and other unsupported shaders retain on-demand compilation.
 Complete whole-game coverage is not implemented yet.
 
+## Whole-library template experiment
+
+The headless compiler now compiles every extracted WAD shader identity from
+asset inputs: **48,772 fragments (27,207 distinct jobs)** and **48,772 vertices
+(740 distinct jobs)**, with zero compilation failures. This establishes asset
+translation coverage, not complete runtime variant coverage or launcher readiness.
+The deployed launcher still uses the 154-entry group described below.
+
+Templates defer per-sampler normalization/gamma flags, buffer strides, null-read
+results and vertex swizzles as SPIR-V specialization constants. Runtime resolution
+patches these already compiled constants; it does not translate guest instructions.
+Some descriptor shapes, vertex number classes and pipeline states still require
+separate compatible variants. The native self-test checks bounded input reads,
+fetch semantics, constant resolution and rejection of malformed templates.
+
+In a 315-identity fragment experiment, all 945 attachment variants compiled and
+the 267 available template/reference comparisons passed Vulkan 1.2 validation.
+After applying recorded descriptors only as a post-compilation test, 100 have
+byte-identical optimized SPIR-V. A structural check finds 217 equivalent outputs,
+ignoring declaration order and numeric IDs only; 50 still differ. One confirmed
+missing case uses a 3D lookup texture where the experimental variant supplies 2D.
+All 270 normal recorded-specialization regression checks still match exactly.
+Private evidence is in `whole-fragment-01`, `whole-vertex-01`,
+`template-validation-01/02/03` and `replay-regression-02`.
+
+`SPV_KHR_float_controls` is redundant at the emitted SPIR-V 1.5 version, but makes
+the upstream aggressive dead-code elimination pass decline the module. Comparison
+normalization removes only that redundant extension declaration, preserving the
+capabilities and execution modes, and validates the resulting core module before
+optimization.
+
+Batch packing and native compilation (research outputs only):
+
+```powershell
+python tools/offline_shaders/batch.py <assets.json> <material-plan.json> <objects-dir> --stage fragment --output <new-input-dir>
+xbox/.local/build/gpu/gow3-offline-shader.exe emit-batch bgra8-template <new-input-dir>/assets.gab <profile.bin> <new-output-dir>
+```
+
+For vertices, pack with `--stage vertex` and use `vertex-depth-template`.
+`vertex-depth-skin-template` selects the unsigned bone-index layout. GAB1 is
+bounded, versioned and streaming. The native process reuses compiler pools and
+writes one SPIR-V container plus an index, avoiding thousands of worker processes.
+The packer performs extraction/serialization only. It reads no gameplay metadata.
+Run `gow3-offline-shader selftest` for native checks. `freeze-template` accepts a
+recorded metadata file only to simulate live specialization in verification.
+
 ## Native launcher preparation
 
 The launcher invokes the C++ asset scanner and the renderer's C++ shader compiler

@@ -47,6 +47,7 @@ public:
     void DeviceMemoryBarrier();
 
     [[nodiscard]] U32 GetUserData(IR::ScalarReg reg);
+    [[nodiscard]] U32 OfflineConstant(u32 value, u32 slot);
 
     template <typename T = U32>
     [[nodiscard]] T GetScalarReg(IR::ScalarReg reg);

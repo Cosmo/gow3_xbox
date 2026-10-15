@@ -255,6 +255,7 @@ if(GOW3_UWP)
     # Headless desktop research tool, never included in an app/package build.
     add_executable(gow3-offline-shader EXCLUDE_FROM_ALL
         ../tools/offline_shaders/compile.cpp
+        ../tools/offline_shaders/native_checks.cpp
         shadps4/shader_recompiler/ir/passes/flatten_extended_userdata_pass.cpp)
     target_compile_definitions(gow3-offline-shader PRIVATE GOW3_OFFLINE_COMPILER NDEBUG _CRT_SECURE_NO_WARNINGS)
     target_compile_options(gow3-offline-shader PRIVATE /EHsc

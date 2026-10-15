@@ -17,9 +17,11 @@
 #include "video_core/amdgpu/regs_depth.h"
 #include "gow3_precompile.h"
 #include "gow3_shader_inputs.h"
+#include "gow3_shader_template.h"
 
 namespace fs = std::filesystem;
 using namespace Shader;
+int RunOfflineShaderChecks();
 
 extern "C" {
 u32 runtime_disabled_optimizations = 0;
@@ -224,7 +226,9 @@ static void Describe(const fs::path& path, const Case& c, bool detailed = false)
     }
 }
 
-static Case ReadVertexAssetCase(Reader& reader,std::string_view target) {
+static Case ReadVertexAssetCase(Reader& reader,std::string_view target,bool parametric) {
+    const bool skinned=target.ends_with("-skin");
+    if(skinned) target.remove_suffix(5);
     if(target!="vertex"&&target!="vertex-depth") throw std::runtime_error("Unknown vertex target variant");
     const auto version=reader.Value<u32>();
     if(version!=1&&version!=2) throw std::runtime_error("Unknown vertex recipe version");
@@ -243,8 +247,8 @@ static Case ReadVertexAssetCase(Reader& reader,std::string_view target) {
     reader.Read(usages.data(),usages_count*4);reader.Read(semantics.data(),inputs*4);
     reader.Read(nullptr,(exports*2+3)&~3u);
     if(version==2) c.spec.start=reader.Value<Backend::Bindings>();
-    c.asset_inputs=std::make_shared<Gow3Precompile::AssetInputs>(usages);
-    c.asset_fetch=Gow3Precompile::AssetFetch(semantics,usages);
+    c.asset_inputs=std::make_shared<Gow3Precompile::AssetInputs>(usages,0,parametric);
+    c.asset_fetch=Gow3Precompile::AssetFetch(semantics,usages,skinned);
     c.recorded.hw_stage=HwStage::Vertex;c.recorded.sw_stage=SwStage::Vertex;
     c.flat.resize(16);c.flat_size=16;
     auto& runtime=c.spec.runtime_info;
@@ -259,11 +263,12 @@ static Case ReadVertexAssetCase(Reader& reader,std::string_view target) {
     return c;
 }
 
-static Case ReadAssetCase(const fs::path& path, std::string_view target) {
-    const auto bytes = ReadFile(path);
+static Case ParseAssetCase(std::span<const u8> bytes, std::string_view target) {
+    const bool parametric=target.ends_with("-template");
+    if(parametric) target.remove_suffix(9);
     Reader reader{bytes};
     const auto magic=reader.Value<u32>();
-    if(magic==0x31505647) return ReadVertexAssetCase(reader,target);
+    if(magic==0x31505647) return ReadVertexAssetCase(reader,target,parametric);
     u32 sampler_flags=0;
     if(target.ends_with("-sampler1")) {sampler_flags=1;target.remove_suffix(9);}
     else if(target.ends_with("-sampler2")) {sampler_flags=2;target.remove_suffix(9);}
@@ -299,7 +304,9 @@ static Case ReadAssetCase(const fs::path& path, std::string_view target) {
     for (u32 i = 0; i < regs[12]; ++i) {
         u16 semantic;
         std::memcpy(&semantic, semantics + i * 2, 2);
-        if (semantic >> 8) throw std::runtime_error("Unresolved asset interpolation flags");
+        // Bit 11 requests linear interpolation, already selected by ENA/ADDR.
+        // Flat/default semantic modes still need an explicit linked variant.
+        if (semantic & 0xf700) throw std::runtime_error("Unresolved asset interpolation flags");
     }
     reader.Read(nullptr, semantic_bytes);
     std::vector<u32> parameters;
@@ -319,7 +326,7 @@ static Case ReadAssetCase(const fs::path& path, std::string_view target) {
     c.recorded.sw_stage = SwStage::Fragment;
     c.flat.resize(16);
     c.flat_size = 16;
-    if(!usages.empty()) c.asset_inputs = std::make_shared<Gow3Precompile::AssetInputs>(usages,sampler_flags);
+    if(!usages.empty()||parametric) c.asset_inputs = std::make_shared<Gow3Precompile::AssetInputs>(usages,sampler_flags,parametric);
     auto& runtime = c.spec.runtime_info;
     runtime.Initialize(HwStage::Fragment, SwStage::Fragment);
     AmdGpu::ShaderProgram pgm{};
@@ -361,6 +368,107 @@ static Case ReadAssetCase(const fs::path& path, std::string_view target) {
         if (target == "bgra8") std::swap(color.swizzle.r, color.swizzle.b);
     }
     return c;
+}
+
+static Case ReadAssetCase(const fs::path& path, std::string_view target) {
+    const auto bytes = ReadFile(path);
+    return ParseAssetCase(bytes, target);
+}
+
+static std::vector<u32> CompileAsset(Case& c, std::span<const u32> code,
+                                     const Profile& profile, Pools& pools, Info& info,
+                                     Backend::Bindings& binding) {
+    if (code.size() < 2 || code.front() != 0xbeeb03ff ||
+        c.spec.runtime_info.props.num_user_data > 16)
+        throw std::runtime_error("Invalid asset compiler input");
+    info.hw_stage = c.recorded.hw_stage;
+    info.sw_stage = c.recorded.sw_stage;
+    info.pgm_hash = c.recorded.pgm_hash;
+    info.pgm_base = 0;
+    info.user_data = std::span(c.flat).first(c.spec.runtime_info.props.num_user_data);
+    info.flattened_ud_buf = c.flat;
+    if (c.asset_inputs) {
+        info.offline_memory = c.asset_inputs.get();
+        info.user_data = c.asset_inputs->UserData().first(c.spec.runtime_info.props.num_user_data);
+        info.offline_descriptor_snapshot = true;
+    }
+    Gcn::FetchShaderSnapshot fetch{.info = &info};
+    if (c.asset_fetch) {
+        fetch = *c.asset_fetch;
+        fetch.info = &info;
+    }
+    Gcn::ScopedFetchShaderSnapshot scope(fetch);
+    auto runtime = c.spec.runtime_info;
+    binding = c.spec.start;
+    const auto ir = TranslateProgram(code, pools, info, runtime, profile);
+    if (!c.asset_inputs && (!info.buffers.empty() || !info.images.empty() ||
+                           !info.samplers.empty() || !info.fmasks.empty() || info.ud_mask.mask))
+        throw std::runtime_error("Asset shader requires descriptor inputs");
+    return Backend::SPIRV::EmitSPIRV(profile, runtime, ir, binding);
+}
+
+// Streaming asset-only batch. A single compiler pool is reset between programs;
+// no recorded metadata, guest execution, GPU, or per-shader process is involved.
+// Results are append-only and checkpointed so an interrupted batch is inspectable.
+static int CompileBatch(std::string_view target, const fs::path& input,
+                        const fs::path& profile_path, const fs::path& directory) {
+    if (fs::exists(directory)) throw std::runtime_error("Batch output must be new");
+    const auto bytes = ReadFile(profile_path);
+    if (bytes.size() != sizeof(Profile)) throw std::runtime_error("Profile layout mismatch");
+    Profile profile;
+    std::memcpy(&profile, bytes.data(), sizeof(profile));
+    std::ifstream file(input, std::ios::binary);
+    auto read = [&](void* dst, size_t size) {
+        if (!file.read(static_cast<char*>(dst), size)) throw std::runtime_error("Truncated asset batch");
+    };
+    std::array<u32, 3> header;
+    read(header.data(), sizeof(header));
+    if (header[0] != 0x31424147 || header[1] != 1 || !header[2] || header[2] > 200000)
+        throw std::runtime_error("Invalid asset batch header");
+    fs::create_directories(directory);
+    std::ofstream binary(directory / "templates.spvpack", std::ios::binary);
+    std::ofstream index(directory / "index.jsonl");
+    Pools pools;
+    u32 failed = 0;
+    for (u32 i = 0; i < header[2]; ++i) {
+        u64 identity;
+        std::array<u32, 2> sizes;
+        read(&identity, sizeof(identity));
+        read(sizes.data(), sizeof(sizes));
+        if (sizes[0] < 20 || sizes[0] > 2048 || sizes[1] < 8 ||
+            sizes[1] > 65536 || sizes[1] % 4)
+            throw std::runtime_error("Invalid asset batch record sizes");
+        std::vector<u8> recipe(sizes[0]);
+        std::vector<u32> code(sizes[1] / 4);
+        read(recipe.data(), recipe.size());
+        read(code.data(), sizes[1]);
+        // The pending record identifies a hard compiler failure too.
+        if (i % 25 == 0) {
+            binary.flush();
+            index.flush();
+            std::cout << fmt::format("Compiling {}/{} ({:016x}), failed={}\n", i, header[2], identity, failed) << std::flush;
+        }
+        try {
+            auto c = ParseAssetCase(recipe, target);
+            if (c.recorded.pgm_hash != identity) throw std::runtime_error("Batch identity mismatch");
+            Info info;
+            Backend::Bindings binding{};
+            auto spirv = CompileAsset(c, code, profile, pools, info, binding);
+            const u64 offset = u64(binary.tellp());
+            binary.write(reinterpret_cast<const char*>(spirv.data()), spirv.size() * 4);
+            index << fmt::format("{{\"index\":{},\"hash\":\"0x{:016x}\",\"outcome\":\"compiled\",\"offset\":{},\"words\":{},\"end_bindings\":[{},{},{}]}}\n",
+                i, identity, offset, spirv.size(), binding.unified, binding.buffer, binding.user_data);
+        } catch (const std::exception& error) {
+            ++failed;
+            index << fmt::format("{{\"index\":{},\"hash\":\"0x{:016x}\",\"outcome\":\"failed\"}}\n", i, identity);
+            std::cerr << fmt::format("Batch skipped {:016x}: {}\n", identity, error.what());
+        }
+        pools.ReleaseContents();
+        if (!index || !binary) throw std::runtime_error("Cannot write asset batch results");
+    }
+    if (file.peek() != std::char_traits<char>::eof()) throw std::runtime_error("Trailing asset batch records");
+    std::cout << fmt::format("Batch complete: {} compiled, {} failed\n", header[2] - failed, failed);
+    return failed ? 3 : 0;
 }
 
 static int Compile(const fs::path& metadata, const fs::path& profile_path,
@@ -441,6 +549,40 @@ int main(int argc, char** argv) {
         // Same default as the UWP host; this also affects image specialization.
         if (!std::getenv("GOW3_NO_MSAA")) _putenv_s("GOW3_NO_MSAA", "1");
         AmdGpu::no_msaa.store(std::string_view(std::getenv("GOW3_NO_MSAA")) != "0");
+        if(argc==2&&std::string_view(argv[1])=="selftest") return RunOfflineShaderChecks();
+        if (argc == 6 && std::string_view(argv[1]) == "emit-batch")
+            return CompileBatch(argv[2], argv[3], argv[4], argv[5]);
+        if(argc==5&&std::string_view(argv[1])=="freeze-template") {
+            const auto c=ReadCase(argv[3]);
+            const auto input=ReadFile(argv[2]);
+            if(input.size()%4||fs::exists(argv[4])) throw std::runtime_error("Invalid template or existing output");
+            std::vector<u32> words(input.size()/4);
+            std::memcpy(words.data(),input.data(),input.size());
+            Info info;
+            static_cast<InfoPersistent&>(info)=c.recorded;
+            info.flattened_ud_buf=c.flat;
+            info.user_data=std::span(c.flat).first(c.spec.runtime_info.props.num_user_data);
+            info.pgm_base=0;
+            Gcn::FetchShaderSnapshot fetch{.info=&info,.fetch=c.spec.fetch_shader_data};
+            if(fetch.fetch) {
+                if(c.spec.vs_attribs.size()!=fetch.fetch->attributes.size()) throw std::runtime_error("Fetch specialization count mismatch");
+                for(const auto& a:c.spec.vs_attribs) {
+                    auto buffer=AmdGpu::Buffer::Placeholder(1);
+                    buffer.dst_sel_x=u32(a.dst_select.r);buffer.dst_sel_y=u32(a.dst_select.g);
+                    buffer.dst_sel_z=u32(a.dst_select.b);buffer.dst_sel_w=u32(a.dst_select.a);
+                    fetch.buffers.push_back(buffer);
+                }
+            }
+            Gcn::ScopedFetchShaderSnapshot scope(fetch);
+            std::vector<u32> frozen;
+            if(!Gow3Precompile::FreezeTemplate(words,[&](u32 slot){return Gow3Precompile::DescriptorConstant(slot,info);},frozen))
+                throw std::runtime_error("Could not resolve all template constants");
+            std::ofstream output(argv[4],std::ios::binary);
+            output.write(reinterpret_cast<const char*>(frozen.data()),frozen.size()*4);output.close();
+            if(!output) throw std::runtime_error("Could not write frozen template");
+            std::cout << "Template constants resolved without shader translation\n";
+            return 0;
+        }
         if (argc == 5 && std::string_view(argv[1]) == "prepare-native") {
             const auto data = ReadFile(argv[3]);
             if (data.size() != sizeof(Profile))

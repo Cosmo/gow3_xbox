@@ -20,7 +20,7 @@ def select_candidates(shaders, material_plan=None, *, resources=False):
     if material_plan:
         for pair in material_plan['pairs']:
             link = pair['interpolation']
-            if not any(link['semantic_flags']) and all(p is not None for p in link['parameter_indices']):
+            if all(flag in (0, 8) for flag in link['semantic_flags']) and all(p is not None for p in link['parameter_indices']):
                 links[pair['fragment']].add(tuple(link['parameter_indices']))
     candidates, unsupported = [], Counter()
     for shader in shaders:
@@ -41,7 +41,7 @@ def select_candidates(shaders, material_plan=None, *, resources=False):
 
 def encode_recipe(shader, parameters, *, resources=False):
     semantics = shader['input_semantics']
-    if (shader['usage_slots'] and not resources) or len(semantics) != len(parameters) or any(s >> 8 for s in semantics):
+    if (shader['usage_slots'] and not resources) or len(semantics) != len(parameters) or any(s & 0xf700 for s in semantics):
         raise ValueError('Unsupported resource or semantic recipe')
     if any(p < 0 or p >= 32 for p in parameters):
         raise ValueError('Invalid interpolation parameter')

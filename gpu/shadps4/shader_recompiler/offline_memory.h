@@ -10,7 +10,17 @@ class OfflineMemory {
   public:
     virtual ~OfflineMemory() = default;
     virtual u32 Read32(u64 address) const = 0;
+    virtual bool Parametric() const { return false; }
 };
+
+namespace OfflineSlot {
+constexpr u32 Normalize = 0x1000;
+constexpr u32 Gamma = 0x2000; // sampler * 64 + image
+constexpr u32 Stride = 0x3000;
+constexpr u32 Swizzle = 0x4000; // vertex attribute * 4 + component
+constexpr u32 BufferPresent = 0x5000;
+constexpr u32 ImagePresent = 0x6000;
+}
 
 struct SrtRead {
     // First offset is a user-data register pair; following offsets follow

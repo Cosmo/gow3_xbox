@@ -1185,7 +1185,21 @@ void Translator::EmitFetch(const GcnInst& inst) {
                                   ir.GetAttribute(attr, 2), ir.GetAttribute(attr, 3));
         const auto converted =
             IR::ApplyReadNumberConversionVec4(ir, values, buffer.GetNumberConversion());
-        const auto swizzled = ApplySwizzle(ir, converted, buffer.DstSelect());
+        auto swizzled = ApplySwizzle(ir, converted, buffer.DstSelect());
+        if(info.offline_memory&&info.offline_memory->Parametric()) {
+            const auto mapping=buffer.DstSelect();
+            const std::array<u32,4> defaults={u32(mapping.r),u32(mapping.g),u32(mapping.b),u32(mapping.a)};
+            std::array<IR::Value,4> selected;
+            for(u32 component=0;component<4;++component) {
+                const auto selector=ir.OfflineConstant(defaults[component],OfflineSlot::Swizzle+attrib.semantic*4+component);
+                IR::Value value=ir.Imm32(0.0f);
+                value=ir.Select(ir.IEqual(selector,ir.Imm32(u32(AmdGpu::CompSwizzle::One))),ir.Imm32(1.0f),value);
+                for(u32 source=0;source<4;++source)
+                    value=ir.Select(ir.IEqual(selector,ir.Imm32(u32(AmdGpu::CompSwizzle::Red)+source)),ir.CompositeExtract(converted,source),value);
+                selected[component]=value;
+            }
+            swizzled=ir.CompositeConstruct(selected[0],selected[1],selected[2],selected[3]);
+        }
         for (u32 i = 0; i < 4; i++) {
             ir.SetVectorReg(dst_reg++, IR::F32{ir.CompositeExtract(swizzled, i)});
         }
