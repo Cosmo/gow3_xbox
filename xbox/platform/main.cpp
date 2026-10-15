@@ -28,6 +28,9 @@ static std::atomic<bool> game_mode{false};
 extern "C" uint64_t gow3_uwp_app_memory_usage() {
     return winrt::Windows::System::MemoryManager::AppMemoryUsage();
 }
+extern "C" uint64_t gow3_uwp_app_memory_limit() {
+    return winrt::Windows::System::MemoryManager::AppMemoryUsageLimit();
+}
 #ifdef GOW3_BUILD_GRAPHICS
 #include "../graphics/present_bridge.h"
 #include "../graphics/overlay.h"
@@ -88,7 +91,7 @@ static void loader() {
            key=="GOW3_UWP_TEXTURE_DUMP"||key=="GOW3_UWP_RENDER_RES"||key=="GOW3_DRAW_PIPE"||
            key=="GOW3_UWP_TEXTURE_ADDRESSES"||key=="GOW3_DEFERRED_READBACK"||
            key=="GOW3_STALE_READBACK"||key=="GOW3_ASYNC_SHADERS"||key=="GOW3_PIPELINE_CACHE"||
-           key=="GOW3_UWP_METRICS"||key=="GOW3_VK_RECORD_THREAD") {
+           key=="GOW3_UWP_METRICS"||key=="GOW3_VK_RECORD_THREAD"||key=="GOW3_GC_BUDGET_MB") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }

@@ -305,3 +305,35 @@ cause frame-time spikes; this is not a locked 30 FPS build. The installed test p
 is `1.0.26288.435`, using 720p, deferred/previous-frame readbacks, persistent caching,
 threaded recording, and `vsync=0`. Background shader compilation and draw-preparation
 workers remain disabled in the recommended Xbox profile.
+
+### App memory pressure (15 October)
+
+A later gameplay run failed in `UniqueImage::Create` with
+`ErrorOutOfDeviceMemory`. Its last five-second sample was 4412 MiB app RAM and
+1737 MiB GPU reserved, against a 5120 MiB app limit. The failed image's size was
+not recorded, so these samples do not establish the allocation's peak demand.
+
+UWP texture collection now uses `MemoryManager.AppMemoryUsage` and the current
+app limit, including CPU guest pages and GPU memory together. Collection starts
+768 MiB below the limit, increases pressure at 512 MiB headroom, and uses its
+critical policy at 256 MiB headroom. Higher pressure considers younger cold
+images. When eviction has occurred under pressure, the collector waits for the
+GPU fence and retires deferred image destruction before another frame allocates.
+GPU-written tiled images retain the existing protection against unsafe eviction;
+required linear-image readbacks remain enabled. Skipped protected images move to
+the back of the LRU queue so they cannot exhaust every bounded scan and starve
+reclaimable images behind them.
+
+For desktop stress testing only, private `graphics-debug.txt` accepts
+`GOW3_GC_BUDGET_MB`. In UWP this lowers the collector's app budget without changing
+the OS limit or paging guest memory. Values below 1024 MiB or above 65536 MiB are
+ignored, and the value cannot raise the real app limit. Remove the override after
+testing. A 4608 MiB stress run completed 236 seconds through opening combat with
+correct textures; samples from 120 seconds onward used 4149-4202 MiB app RAM and
+902-938 MiB GPU allocations. Startup still peaked at 4705 MiB: collection is not
+a hard cap on live allocations.
+
+Image allocation failures now log dimensions, format, layers, mip levels, sample
+count, app memory, and VMA heap budgets to `loader.log`. The later crash scene
+still requires validation; opening combat alone does not establish that the full
+level fits in memory.

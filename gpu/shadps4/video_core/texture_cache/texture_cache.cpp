@@ -25,6 +25,8 @@
 #include "video_core/texture_cache/tile_manager.h"
 #ifdef GOW3_UWP
 #include "texture_probe.h"
+extern "C" uint64_t gow3_uwp_app_memory_usage();
+extern "C" uint64_t gow3_uwp_app_memory_limit();
 #endif
 
 namespace VideoCore {
@@ -1460,6 +1462,21 @@ void TextureCache::UntrackImageTail(ImageId image_id) {
 
 void TextureCache::GarbageCollectImages() {
     Gow3Stats::Timer gc_timer{Gow3Stats::t_gc};
+#ifdef GOW3_UWP
+    // CPU guest pages and GPU heaps share the UWP app limit. DXGI's GPU budget alone
+    // does not leave room for scene loads and transient driver allocations.
+    total_used_memory = gow3_uwp_app_memory_usage();
+    static const u64 test_budget = [] {
+        const char* env = std::getenv("GOW3_GC_BUDGET_MB");
+        const u64 mb = env ? std::strtoull(env, nullptr, 10) : 0;
+        return mb >= 1024 && mb <= 65536 ? mb << 20 : 0;
+    }();
+    const u64 app_budget = test_budget ? std::min(test_budget, gow3_uwp_app_memory_limit())
+                                      : gow3_uwp_app_memory_limit();
+    trigger_gc_memory = app_budget > 768_MB ? app_budget - 768_MB : app_budget / 2;
+    pressure_gc_memory = app_budget > 512_MB ? app_budget - 512_MB : app_budget * 3 / 4;
+    critical_gc_memory = app_budget > 256_MB ? app_budget - 256_MB : app_budget * 7 / 8;
+#else
     if (instance.CanReportMemoryUsage()) {
         total_used_memory = instance.GetDeviceMemoryUsage();
         // gow3: on integrated GPUs (Steam Deck) the usage covers system-memory heaps holding
@@ -1481,12 +1498,14 @@ void TextureCache::GarbageCollectImages() {
             }
         }
     }
+#endif
     if (total_used_memory < trigger_gc_memory) {
         return;
     }
     std::scoped_lock lock{mutex};
     bool pressured = false;
     bool aggresive = false;
+    [[maybe_unused]] bool evicted_images = false;
     u64 ticks_to_destroy = 0;
     size_t num_deletions = 0;
 
@@ -1494,6 +1513,9 @@ void TextureCache::GarbageCollectImages() {
         pressured = total_used_memory >= pressure_gc_memory;
         aggresive = allow_aggressive && total_used_memory >= critical_gc_memory;
         ticks_to_destroy = aggresive ? 160 : pressured ? 80 : 16;
+#ifdef GOW3_UWP
+        ticks_to_destroy = aggresive ? 16 : pressured ? 32 : 64;
+#endif
         ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
         num_deletions = aggresive ? 40 : pressured ? 20 : 10;
     };
@@ -1509,9 +1531,16 @@ void TextureCache::GarbageCollectImages() {
         const bool tiled = image.info.IsTiled();
         if (tiled && download) {
             // This is a workaround for now. We can't handle non-linear image downloads.
+#ifdef GOW3_UWP
+            // Keep protected images from exhausting every subsequent bounded scan.
+            lru_cache.Touch(image.lru_id, gc_tick);
+#endif
             return false;
         }
         if (download && !pressured) {
+#ifdef GOW3_UWP
+            lru_cache.Touch(image.lru_id, gc_tick);
+#endif
             return false;
         }
         if (download) {
@@ -1522,6 +1551,7 @@ void TextureCache::GarbageCollectImages() {
             ++gc_downloads;
         }
         ++gc_evictions;
+        evicted_images = true;
         FreeImage(image_id);
         if (total_used_memory < critical_gc_memory) {
             if (aggresive) {
@@ -1547,7 +1577,11 @@ void TextureCache::GarbageCollectImages() {
         lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
     }
     // gow3: evictions under memory pressure, at most every 5 s (GOW3_FRAME_STATS or not).
-    if (pressured || gc_downloads != 0) {
+    if (pressured || gc_downloads != 0
+#ifdef GOW3_UWP
+        || evicted_images
+#endif
+    ) {
         const auto now = std::chrono::steady_clock::now();
         if (now - gc_report_time >= std::chrono::seconds(5)) {
             std::printf("Texture cache: memory pressure, %llu of %llu MiB (critical %llu): "
@@ -1560,6 +1594,14 @@ void TextureCache::GarbageCollectImages() {
             gc_evictions = gc_downloads = 0;
         }
     }
+#ifdef GOW3_UWP
+    // Deletion is fence deferred. Reclaim completed images now when headroom is low,
+    // rather than letting another frame allocate over the app limit first.
+    if (evicted_images && gow3_uwp_app_memory_usage() >= pressure_gc_memory) {
+        scheduler.Finish();
+        scheduler.PopPendingOperations();
+    }
+#endif
 }
 
 void TextureCache::GarbageCollectSamplers() {
