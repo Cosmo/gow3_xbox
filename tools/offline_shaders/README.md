@@ -34,14 +34,17 @@ The desktop UWP smoke test reached combat with the ordinary shader cache
 disabled and recorded **467 synchronous prepared shader hits**. Sequential
 captures showed correctly rendered intros and combat. The test was stopped by
 a deadline watchdog and its temporary input/settings were cleared or restored.
-The signed Xbox package is `1.0.26288.1829`; console preparation verification
-is recorded in ignored local evidence rather than bundling PC-specific caches.
+Signed Xbox package `1.0.26288.1829` completed native preparation of all 97,544
+identities (437,096 variant checks), with zero skips or failures, in approximately
+2.5 minutes. Reported memory stayed around 2.0 GiB and returned to 1.7 GiB after
+preparation. The console generated its own GPU-profile cache; no PC library was
+uploaded. The test closed immediately afterward and manual startup was restored.
 
 The full library prepares on the target GPU profile. A repeat run reuses valid
 entries; the desktop launcher's actual preparation action also reused all
 97,544 identities. Private evidence is under `xbox/.local/offline-shaders`:
 `native-all-templates-02`, `native-all-lookup-02`, `native-all-compare-02`,
-`replay-regression-03`, and `desktop-all-smoke-02`.
+`replay-regression-03`, `desktop-all-smoke-02`, and `xbox-all-prepare-02`.
 
 This prepares **PS4 GCN to SPIR-V translation**. Driver translation to DXIL and
 graphics pipeline creation can still happen on first use. Original shaders
