@@ -87,7 +87,8 @@ static void loader() {
            key=="GOW3_DUMP_SHADERS"||key=="GOW3_UWP_CAPTURE"||key=="GOW3_NO_MSAA"||
            key=="GOW3_UWP_TEXTURE_DUMP"||key=="GOW3_UWP_RENDER_RES"||key=="GOW3_DRAW_PIPE"||
            key=="GOW3_UWP_TEXTURE_ADDRESSES"||key=="GOW3_DEFERRED_READBACK"||
-           key=="GOW3_STALE_READBACK"||key=="GOW3_ASYNC_SHADERS"||key=="GOW3_PIPELINE_CACHE") {
+           key=="GOW3_STALE_READBACK"||key=="GOW3_ASYNC_SHADERS"||key=="GOW3_PIPELINE_CACHE"||
+           key=="GOW3_UWP_METRICS"||key=="GOW3_VK_RECORD_THREAD") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }
@@ -161,7 +162,7 @@ static void loader() {
     _putenv_s("GOW3_READBACK_LINEAR","1");
     if(!std::getenv("GOW3_NO_MSAA")) _putenv_s("GOW3_NO_MSAA","1");
     if(!std::getenv("GOW3_DRAW_PIPE")) _putenv_s("GOW3_DRAW_PIPE","1");
-    _putenv_s("GOW3_VK_RECORD_THREAD","0");
+    if(!std::getenv("GOW3_VK_RECORD_THREAD")) _putenv_s("GOW3_VK_RECORD_THREAD","0");
     _putenv_s("GOW3_COPY_THREADS","0");
     _putenv_s("GOW3_PREP_WORKERS","0");
     if(!std::getenv("GOW3_ASYNC_SHADERS")) _putenv_s("GOW3_ASYNC_SHADERS","0");
@@ -173,7 +174,9 @@ static void loader() {
     _putenv_s("GOW3_ENGINE_FPS","60");
     _putenv_s("GOW3_VBLANK_HZ","60");
     std::printf("UWP graphics patches: %s, texture arena fix, 7104 MiB virtual direct pool, 60 Hz engine\n",use_720p?"720p":"native");
-    std::printf("UWP renderer baseline: draw pipe %s, synchronous copies and shader selection\n",std::getenv("GOW3_DRAW_PIPE"));
+    std::printf("UWP renderer: draw pipe %s, record thread %s, async shaders %s, pipeline cache %s\n",
+        std::getenv("GOW3_DRAW_PIPE"),std::getenv("GOW3_VK_RECORD_THREAD"),
+        std::getenv("GOW3_ASYNC_SHADERS"),std::getenv("GOW3_PIPELINE_CACHE"));
     std::puts("Running the existing loader and runtime with native UWP audio output.");
     std::vector<std::string> arguments={"gow3-uwp",boot};
 #ifdef GOW3_LINK_RENDERER

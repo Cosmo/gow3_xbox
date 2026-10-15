@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 namespace Gow3Uwp::Overlay {
@@ -44,7 +45,8 @@ void Presented() {
     last_frame=now;
 }
 void Render(const Vulkan::Instance& instance) {
-    if(!Visible()) return;
+    static const bool metrics=[] { auto value=std::getenv("GOW3_UWP_METRICS");return value&&*value=='1'; }();
+    if(!Visible()&&!metrics) return;
     thread_local bool apartment=false;
     if(!apartment) {
         try {winrt::init_apartment(winrt::apartment_type::multi_threaded);}
@@ -83,6 +85,14 @@ void Render(const Vulkan::Instance& instance) {
         sum+=frame_times[(frame_index+frame_times.size()-1-count)%frame_times.size()];
     const float average=count ? sum/count : 0;
     const float fps=average>0 ? 1000/average : 0;
+    static auto reported=Clock::time_point{};
+    if(metrics&&now-reported>=std::chrono::seconds(5)) {
+        std::printf("UWP metrics: t=%lld fps=%.1f ms=%.1f cpu=%.1f ram=%llu limit=%llu gpu=%llu reserved=%llu MiB\n",
+            std::chrono::duration_cast<std::chrono::seconds>(now-started).count(),fps,average,cpu,
+            used>>20,limit>>20,gpu_allocated>>20,gpu_reserved>>20);
+        reported=now;
+    }
+    if(!Visible()) return;
     const float scale=std::max(ImGui::GetIO().DisplaySize.y/1080.0f,0.75f);
     ImGui::SetNextWindowPos({24*scale,24*scale},ImGuiCond_Always);
     ImGui::SetNextWindowSize({300*scale,0},ImGuiCond_Always);

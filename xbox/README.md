@@ -274,3 +274,34 @@ captures and closes its own test process when the measurement ends. Optional
 texture inspection compares guest memory, tiled GPU input, detiled output, and
 image readback. Set `GOW3_UWP_TEXTURE_DUMP=1`; optionally restrict it with a
 comma-separated `GOW3_UWP_TEXTURE_ADDRESSES` list. Dumps stay in private LocalState.
+
+The Series X reached corrected native-resolution gameplay at about 23 FPS and
+4335 MiB app RAM in an opening combat capture. A 720p run with deferred readbacks
+showed about 27 FPS and 4103 MiB in the same opening area. These are scene samples,
+not a controlled benchmark. The 720p frame capture confirms 1280x720 render targets.
+
+`graphics-profile.example.txt` contains the tested private graphics switches; copy
+it to the app's `LocalState/graphics-debug.txt`. The required linear-image readbacks
+are always enabled by the UWP launcher. Persistent pipeline caching stores compiled
+work between launches; asynchronous compilation remains an optional comparison
+switch. `GOW3_UWP_METRICS=1` logs FPS, frame time, CPU, app RAM and GPU allocations
+every five seconds, including when the performance panel is hidden.
+
+The existing `user/graphics.cfg` accepts `vsync=0` for a comparison with unsynchronized
+presentation. Preserve other keys when changing it. Keep startup patch selection
+in `graphics-debug.txt`; the UWP app does not support the desktop restart command.
+
+Some Xbox OS versions reject or stall on the package stop endpoint.
+`xbox-stop.ps1` uses the process stop endpoint after checking each process still
+belongs to the selected package, then verifies it is no longer running. Xbox may
+retain an inactive process record; the result reports those IDs separately.
+
+The final Series X comparison enables threaded Vulkan recording as well. Five-second
+samples between 120 and 280 seconds averaged 25.0 FPS, versus 22.6 with direct recording;
+these scripted opening-combat runs are not a controlled benchmark. App RAM stayed
+between 4229 and 4279 MiB in that interval, with a 4500 MiB peak across startup and
+gameplay, against the 5120 MiB budget. First-use shader compilation and effects still
+cause frame-time spikes; this is not a locked 30 FPS build. The installed test package
+is `1.0.26288.435`, using 720p, deferred/previous-frame readbacks, persistent caching,
+threaded recording, and `vsync=0`. Background shader compilation and draw-preparation
+workers remain disabled in the recommended Xbox profile.
