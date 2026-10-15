@@ -174,16 +174,20 @@ static void Describe(const fs::path& path, const Case& c, bool detailed = false)
 }
 
 static Case ReadAssetCase(const fs::path& path, std::string_view target) {
-    if (target != "depth-only" && target != "rgba8") throw std::runtime_error("Unknown asset target variant");
+    if (target != "depth-only" && target != "rgba8" && target != "bgra8") {
+        throw std::runtime_error("Unknown asset target variant");
+    }
     const auto bytes = ReadFile(path);
     Reader reader{bytes};
-    if (reader.Value<u32>() != 0x31504647 || reader.Value<u32>() != 1) {
+    if (reader.Value<u32>() != 0x31504647) {
         throw std::runtime_error("Invalid GFP1 fragment asset recipe");
     }
+    const auto version = reader.Value<u32>();
+    if (version != 1 && version != 2) throw std::runtime_error("Unknown fragment recipe version");
     Case c;
     c.recorded.pgm_hash = reader.Value<u64>();
     const auto size = reader.Value<u32>();
-    if (size != reader.bytes.size() || size < 52 || size > 1136) {
+    if (size > reader.bytes.size() || size < 52 || size > 1136) {
         throw std::runtime_error("Invalid fragment asset header length");
     }
     std::array<u32, 13> regs;
@@ -191,11 +195,31 @@ static Case ReadAssetCase(const fs::path& path, std::string_view target) {
     if (regs[0] != size + 8 || regs[1] != 0xffffffff || regs[12] > 32) {
         throw std::runtime_error("Invalid fragment asset header");
     }
-    // First independent proof is intentionally limited: interpolation linkage
-    // and resource tables need the paired material/vertex/texture records.
-    if (size != 52 || regs[12] != 0 || (regs[8] & 63) != 0) {
-        throw std::runtime_error("Asset-only proof requires no input semantics or usage slots");
+    // No resource table provider yet. Interpolation comes from the paired
+    // vertex's asset export semantics, never from recorded shader metadata.
+    if (size != 52 + ((regs[12] * 2 + 3) & ~3u) || (regs[8] & 63) != regs[12]) {
+        throw std::runtime_error("Asset-only proof requires no usage slots and matching input semantics");
     }
+    const auto* semantics = reader.bytes.data();
+    for (u32 i = 0; i < regs[12]; ++i) {
+        u16 semantic;
+        std::memcpy(&semantic, semantics + i * 2, 2);
+        if (semantic >> 8) throw std::runtime_error("Unresolved asset interpolation flags");
+    }
+    reader.Read(nullptr, size - 52);
+    std::vector<u32> parameters;
+    if (version == 2) {
+        const auto count = reader.Value<u32>();
+        if (count != regs[12]) throw std::runtime_error("Asset interpolation map length mismatch");
+        for (u32 i = 0; i < count; ++i) {
+            const auto parameter = reader.Value<u32>();
+            if (parameter >= 32) throw std::runtime_error("Invalid asset interpolation parameter");
+            parameters.push_back(parameter);
+        }
+    } else if (regs[12]) {
+        throw std::runtime_error("Linked inputs require recipe version 2");
+    }
+    if (!reader.bytes.empty()) throw std::runtime_error("Unexpected trailing asset recipe data");
     c.recorded.hw_stage = HwStage::Fragment;
     c.recorded.sw_stage = SwStage::Fragment;
     c.flat.resize(16);
@@ -213,6 +237,11 @@ static Case ReadAssetCase(const fs::path& path, std::string_view target) {
     runtime.props.fp_denorm_mode16_64 = pgm.settings.fp_denorm_mode64;
     if (runtime.props.num_user_data > 16) throw std::runtime_error("Too many user registers");
     auto& fragment = runtime.hw.fs;
+    fragment.num_inputs = parameters.size();
+    for (u32 i = 0; i < parameters.size(); ++i) {
+        fragment.inputs[i] = {.param_index = u8(parameters[i]), .is_default = false,
+                             .is_flat = false, .default_value = 0};
+    }
     fragment.en_flags = std::bit_cast<AmdGpu::PsInput>(regs[6]);
     fragment.addr_flags = std::bit_cast<AmdGpu::PsInput>(regs[7]);
     fragment.front_face_all_bits = std::bit_cast<AmdGpu::BarycentricControl>(regs[9]).front_face_all_bits;
@@ -233,6 +262,7 @@ static Case ReadAssetCase(const fs::path& path, std::string_view target) {
         color.export_format = export_format;
         color.swizzle = {.r = AmdGpu::CompSwizzle::Red, .g = AmdGpu::CompSwizzle::Green,
                          .b = AmdGpu::CompSwizzle::Blue, .a = AmdGpu::CompSwizzle::Alpha};
+        if (target == "bgra8") std::swap(color.swizzle.r, color.swizzle.b);
     }
     return c;
 }
@@ -335,7 +365,7 @@ int main(int argc, char** argv) {
                   << "       gow3-offline-shader compile META PROFILE GCN REFERENCE OUTPUT\n"
                   << "       gow3-offline-shader compile-asset TARGET PSH PROFILE GCN REFERENCE OUTPUT\n"
                   << "       gow3-offline-shader emit-asset TARGET PSH PROFILE GCN OUTPUT\n"
-                  << "       TARGET: depth-only or rgba8\n";
+                  << "       TARGET: depth-only, rgba8, or bgra8\n";
         return 2;
     } catch (const std::exception& error) {
         std::cerr << "Offline shader: " << error.what() << '\n';

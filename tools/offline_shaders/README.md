@@ -160,16 +160,57 @@ python tools/offline_shaders/emit.py xbox/.local/offline-shaders/all-wads-02/rep
   xbox/.local/offline-shaders/asset-headers-02/assets.json `
   --profile <target-GPU-profile.bin> `
   --worker xbox/.local/build/gpu/gow3-offline-shader.exe `
-  --target depth-only --target rgba8 `
+  --plan xbox/.local/offline-shaders/material-plan-02.json `
+  --target depth-only --target rgba8 --target bgra8 `
   --output xbox/.local/offline-shaders/new-independent-batch
 ```
 
 Measured independent batch: **79 asset shader identities, five distinct code
 sequences, two explicit target variants: 158 fresh compilations, zero failures**.
-This path supports only fragment headers without usage slots/input semantics
-and rejects shaders that discover resources or user-data specialization. It is
+That initial path supported only fragment headers without usage slots/input
+semantics. The extended path accepts recovered input linkage from `--plan` and
+still rejects shaders that discover resources or user-data specialization. It is
 a deliberately small supported subset, not a whole-game cache. Fresh outputs
 beyond the byte-matched proof have not been exercised in gameplay.
+
+## Validation method: the cache is a test set
+
+The general asset compiler must obtain its shader-specific inputs from game
+assets and explicit target variants. Existing gameplay `.meta` files must not
+supply those inputs in this experiment. After compilation has finished, compare
+the generated SPIR-V with recorded outputs for the known subset:
+
+```powershell
+python tools/offline_shaders/check_outputs.py `
+  xbox/.local/offline-shaders/new-independent-batch/emission.json `
+  --reference <existing-per-title-cache-directory> `
+  --output xbox/.local/offline-shaders/new-independent-comparison.json
+```
+
+The comparison tool cannot invoke the compiler and does not read `.meta` files.
+Its profile check ensures both sets target the same GPU compiler profile. This
+separation lets known examples validate a general method before applying it to
+unseen assets. Additional playthroughs are not a prerequisite for expanding it.
+The full asset census reports unsupported requirements independently of cache
+membership. Representative exact matches support extending the method to other
+shaders with the same requirements; they do not guarantee every pipeline variant.
+
+The extended resource-free group has 154 identities (79 without linkage, 75 with
+linkage). The first blind run compiled them all, then matched four of seven
+available references. The other three differed only in red/blue output channel
+ordering, exposing the missing standard BGRA attachment variant. The corrected
+batch includes depth-only, RGBA8, and BGRA8 targets. It still uses no recorded
+shader specialization inputs.
+
+Corrected result: **462 fresh outputs across 154 identities and three target
+variants; all seven available reference cases match byte-for-byte**. The other
+147 identities were absent from the reference cache and compiled through the
+same asset-only method. This validates extension of the supported group without
+requiring a gameplay recording for each member. Private results are
+`blind-linkage-02/emission.json` and `blind-linkage-02-validation.json` under
+`xbox/.local/offline-shaders`. The full census separately reports 48,618 fragment
+identities needing resource descriptors and 48,772 vertex identities needing
+input-format support.
 
 ## Remaining work
 
