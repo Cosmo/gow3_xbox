@@ -5,9 +5,10 @@ specializations can be recovered from installed assets before gameplay. The
 eventual target is an Xbox launcher action that builds a local cache for the
 whole game without requiring a prior playthrough.
 
-The first milestone is a read-only extractor and comparison tool. **It does not
-compile shaders or produce an importable runtime cache yet.** No launcher or
-runtime behavior changes are included.
+The extractor and headless compiler can freshly compile extracted fragment
+programs using recorded specialization data. **Asset-independent specialization
+and an importable whole-game runtime cache are not implemented yet.** No launcher
+or runtime behavior changes are included.
 
 ## Running the inventory
 
@@ -71,11 +72,42 @@ executables, modules, generated shaders, and alternate program layouts are not
 covered. The measured scan took approximately 226 seconds on the development PC.
 Private output is under `xbox/.local/offline-shaders/all-wads-02`.
 
-## Next proof: fresh compilation of one matching case
+## Fresh compilation comparison
 
-Use one extracted program plus a known runtime case, compile it freshly, and
-compare with its recorded SPIR-V. Then remove the dependence on the runtime
-case by reconstructing equivalent inputs from the assets. Repeating a stored
+With an existing configured UWP graphics build:
+
+```powershell
+pwsh -NoProfile -File tools/offline_shaders/build.ps1
+python tools/offline_shaders/compare.py xbox/.local/offline-shaders/all-wads-02/report.json `
+  --worker xbox/.local/build/gpu/gow3-offline-shader.exe `
+  --output xbox/.local/offline-shaders/new-comparison --limit 270
+```
+
+The explicit CMake target is excluded from normal app builds. It links the same
+shader compiler as UWP and replaces only its table-refresh pass in this separate
+executable: flat descriptor offsets are regenerated, but captured table bytes are
+used without following old guest pointers. Recorded walker pointers and machine
+code are discarded. Derived compiler Info is built afresh rather than copied.
+The tool creates no Vulkan device, launches no game, and never writes into the
+reference cache. Each comparison runs in a bounded subprocess and saves its fresh
+SPIR-V, log, and provenance in the new private output directory.
+
+Measured result: **270 / 270 extracted fragment-shader cases produced byte-identical
+SPIR-V**, including texture/resource-table cases. The initial simple proof was
+`0x683cb941b24f0169`, from the `crepuscularRays` material in `R_FX.WAD`. The full
+comparison is in `.local/offline-shaders/compile-fragments-03` under `xbox`.
+Matching the renderer's `AmdGpu::no_msaa` setting was necessary: without that
+initialization, 85 cases emitted multisampled texture operations instead.
+The worker uses the UWP default (no MSAA); `GOW3_NO_MSAA=0` selects the other mode.
+
+This is a recorded-specialization replay proof, not whole-game precompilation.
+Native `.meta` version 7 and unsalted shader version 7 are required. Vertex fetch,
+other stages, and alternate native cache layouts are deliberately rejected.
+
+## Next proof: replace recorded specialization inputs
+
+Remove the dependence on the runtime case by reconstructing equivalent inputs
+from the assets. Repeating a stored
 SPIR-V file or replaying only previously collected pipelines would not meet the
 whole-game goal.
 

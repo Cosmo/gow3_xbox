@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <queue>
+#include <stdexcept>
 #include <xbyak/xbyak.h>
 #include <xbyak/xbyak_util.h>
 #include "common/arch.h"
@@ -861,7 +862,15 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
         SetFlatbufOffset(readconst, GetFlatbufOffset(original));
     }
 
+#ifdef GOW3_OFFLINE_COMPILER
+    // Compiler-only replay: offsets are regenerated, descriptors come from a
+    // captured flat table. Never follow pointers from the previous game process.
+    if (program.info.flattened_ud_buf.size() != program.info.srt_info.flattened_bufsize_dw) {
+        throw std::runtime_error("Offline descriptor snapshot does not match regenerated layout");
+    }
+#else
     program.info.RefreshFlatBuf();
+#endif
 }
 
 } // namespace Shader::Optimization

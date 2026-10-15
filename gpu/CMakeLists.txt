@@ -252,6 +252,17 @@ else()
 endif()
 
 if(GOW3_UWP)
+    # Headless desktop research tool, never included in an app/package build.
+    add_executable(gow3-offline-shader EXCLUDE_FROM_ALL
+        ../tools/offline_shaders/compile.cpp
+        shadps4/shader_recompiler/ir/passes/flatten_extended_userdata_pass.cpp)
+    target_compile_definitions(gow3-offline-shader PRIVATE GOW3_OFFLINE_COMPILER NDEBUG _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(gow3-offline-shader PRIVATE /EHsc
+        "/FI${CMAKE_CURRENT_SOURCE_DIR}/../xbox/graphics/compat.h")
+    target_include_directories(gow3-offline-shader PRIVATE shim shadps4 third_party/gcn/include
+        third_party/xbyak ../xbox/platform ../xbox/platform/compat
+        "${GOW3_PTHREAD}/include")
+    target_link_libraries(gow3-offline-shader PRIVATE gow3gpu)
     return()
 endif()
 
