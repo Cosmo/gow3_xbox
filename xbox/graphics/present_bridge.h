@@ -20,5 +20,6 @@ private:
     std::unique_ptr<Impl> impl;
 };
 int GraphicsProbe();
+int TextureProbe();
 void InitializeDriver();
 }

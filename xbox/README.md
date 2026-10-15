@@ -237,3 +237,18 @@ validation for the remaining assets. See [Microsoft's file-access documentation]
 `pc-smoke.ps1 -Isolated -Mode boot` registers a separate `Gow3.Uwp.Smoke` development
 layout if the primary PC package is stuck in servicing. Subsequent runs use
 `-PackageName Gow3.Uwp.Smoke`; the console retains its original package identity.
+
+`pc-smoke.ps1` closes either of this project's desktop test layouts before launching
+another. Diagnostic modes close after collecting their logs; `boot` stays open for
+gameplay. Close gameplay when a capture or input test is finished.
+
+`pc-autostart.ps1 -Seconds 270` pulses A once per second in the Smoke package,
+then releases scripted input. This passes the menus without manual input; the opening
+cinematic still takes several minutes. It uses the existing private `controls.txt`.
+
+`pc-smoke.ps1 -Mode texture` checks the actual detiler against a CPU Morton reference
+at 8/16/32/64/128 bits, with three mips, two layers and a nonzero buffer offset.
+It also checks padded texture uploads/readbacks for R8, RGBA8, BC1 and BC3. All nine
+pass on PC UWP with the Dozen array-stride fix: `bufferImageHeight` must determine
+the buffer offset of later array layers. These checks do not establish that the
+later gameplay rendering is correct; that still needs visual comparison.

@@ -90,8 +90,14 @@ static void loader() {
         }
     }
     game_mode=(mode=="boot");
+    std::string user=winrt::to_string(local)+"\\user";
+    CreateDirectoryW((std::wstring(local)+L"\\user").c_str(),nullptr);
+    _putenv_s("GOW3_GPU_USER_DIR",user.c_str());
 #ifdef GOW3_BUILD_GRAPHICS
     if(mode=="graphics") { int result=Gow3Uwp::GraphicsProbe(); std::printf("Graphics probe returned %d\n",result); finished=true; return; }
+#ifdef GOW3_LINK_RENDERER
+    if(mode=="texture") { int result=Gow3Uwp::TextureProbe(); std::printf("Texture probe returned %d\n",result); finished=true; return; }
+#endif
 #endif
     if(mode=="memory") {
         char *args[]={const_cast<char *>("gow3-uwp"),const_cast<char *>("--memory-selftest")};
@@ -144,9 +150,6 @@ static void loader() {
     std::string package=winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
     std::string boot=package+"\\Prepared\\boot-linked.bin";
     std::string content=package+"\\Prepared\\content.bin";
-    std::string user=winrt::to_string(local)+"\\user";
-    CreateDirectoryW((std::wstring(local)+L"\\user").c_str(),nullptr);
-    _putenv_s("GOW3_GPU_USER_DIR",user.c_str());
     _putenv_s("GOW3_CONFIG",(user+"\\graphics.cfg").c_str());
     _putenv_s("GOW3_PAD_FILE",(winrt::to_string(local)+"\\controls.txt").c_str());
     _putenv_s("GOW3_UPSCALER","off");
