@@ -13,6 +13,7 @@
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "shader_recompiler/recompiler.h"
 #include "shader_recompiler/specialization.h"
+#include "video_core/amdgpu/regs_depth.h"
 
 namespace fs = std::filesystem;
 using namespace Shader;
@@ -129,21 +130,118 @@ static Case ReadCase(const fs::path& path) {
     return result;
 }
 
-static void Describe(const fs::path& path, const Case& c) {
+static void Describe(const fs::path& path, const Case& c, bool detailed = false) {
+    std::string input_map;
+    if (c.recorded.hw_stage == HwStage::Fragment) {
+        const auto& fragment = c.spec.runtime_info.hw.fs;
+        if (fragment.num_inputs > 32) throw std::runtime_error("Invalid interpolation count");
+        for (u32 i = 0; i < fragment.num_inputs; ++i) {
+            const auto& input = fragment.inputs[i];
+            if (i) input_map += ',';
+            input_map += fmt::format("{}", u32(input.param_index) | (u32(input.is_default) << 8) |
+                (u32(input.is_flat) << 9) | (u32(input.default_value) << 16));
+        }
+    }
     std::cout << fmt::format(
         "{{\"meta\":\"{}\",\"hash\":\"0x{:016x}\",\"permutation\":{},"
         "\"stage\":{},\"buffers\":{},\"images\":{},\"samplers\":{},"
-        "\"fetch\":{},\"flat_words\":{},\"walker_bytes\":{}}}\n",
+        "\"fetch\":{},\"flat_words\":{},\"walker_bytes\":{},"
+        "\"common\":[{},{},{},{},{},{},{}],\"input_map\":[{}],\"start\":[{},{},{}]}}\n",
         path.filename().string(), c.recorded.pgm_hash, c.permutation,
         static_cast<u32>(c.recorded.hw_stage), c.recorded.buffers.size(),
         c.recorded.images.size(), c.recorded.samplers.size(),
-        c.spec.fetch_shader_data.has_value() ? "true" : "false", c.flat_size, c.walker_bytes);
+        c.spec.fetch_shader_data.has_value() ? "true" : "false", c.flat_size, c.walker_bytes,
+        c.spec.runtime_info.props.num_user_data, c.spec.runtime_info.props.num_input_vgprs,
+        c.spec.runtime_info.props.num_allocated_vgprs,
+        static_cast<u32>(c.spec.runtime_info.props.fp_round_mode32),
+        static_cast<u32>(c.spec.runtime_info.props.fp_round_mode16_64),
+        static_cast<u32>(c.spec.runtime_info.props.fp_denorm_mode32),
+        static_cast<u32>(c.spec.runtime_info.props.fp_denorm_mode16_64), input_map,
+        c.spec.start.unified, c.spec.start.buffer, c.spec.start.user_data);
+    if (detailed && c.recorded.hw_stage == HwStage::Fragment) {
+        const auto& f = c.spec.runtime_info.hw.fs;
+        std::cerr << fmt::format("Fragment flags: ena={}, addr={}, inputs={}, z={}, samples={}, mrtz={}, front={}, dual={}, clip={}, motion={}\n",
+            std::bit_cast<u32>(f.en_flags), std::bit_cast<u32>(f.addr_flags), f.num_inputs,
+            u32(f.z_export_format), f.num_samples, f.mrtz_mask, f.front_face_all_bits,
+            f.dual_source_blending, f.clip_distance_emulation, f.motion_vectors);
+        for (u32 i = 0; i < MaxColorBuffers; ++i) {
+            const auto& b = f.color_buffers[i];
+            std::cerr << fmt::format("CB{}: data={}, num={}, conversion={}, export={}, swizzle={}/{}/{}/{}\n",
+                i, u32(b.data_format), u32(b.num_format), u32(b.num_conversion), u32(b.export_format),
+                u32(b.swizzle.r), u32(b.swizzle.g), u32(b.swizzle.b), u32(b.swizzle.a));
+        }
+    }
+}
+
+static Case ReadAssetCase(const fs::path& path, std::string_view target) {
+    if (target != "depth-only" && target != "rgba8") throw std::runtime_error("Unknown asset target variant");
+    const auto bytes = ReadFile(path);
+    Reader reader{bytes};
+    if (reader.Value<u32>() != 0x31504647 || reader.Value<u32>() != 1) {
+        throw std::runtime_error("Invalid GFP1 fragment asset recipe");
+    }
+    Case c;
+    c.recorded.pgm_hash = reader.Value<u64>();
+    const auto size = reader.Value<u32>();
+    if (size != reader.bytes.size() || size < 52 || size > 1136) {
+        throw std::runtime_error("Invalid fragment asset header length");
+    }
+    std::array<u32, 13> regs;
+    reader.Read(regs.data(), sizeof(regs));
+    if (regs[0] != size + 8 || regs[1] != 0xffffffff || regs[12] > 32) {
+        throw std::runtime_error("Invalid fragment asset header");
+    }
+    // First independent proof is intentionally limited: interpolation linkage
+    // and resource tables need the paired material/vertex/texture records.
+    if (size != 52 || regs[12] != 0 || (regs[8] & 63) != 0) {
+        throw std::runtime_error("Asset-only proof requires no input semantics or usage slots");
+    }
+    c.recorded.hw_stage = HwStage::Fragment;
+    c.recorded.sw_stage = SwStage::Fragment;
+    c.flat.resize(16);
+    c.flat_size = 16;
+    auto& runtime = c.spec.runtime_info;
+    runtime.Initialize(HwStage::Fragment, SwStage::Fragment);
+    AmdGpu::ShaderProgram pgm{};
+    std::memcpy(&pgm.settings, regs.data() + 2, 8);
+    runtime.props.num_user_data = pgm.settings.num_user_regs;
+    runtime.props.num_input_vgprs = pgm.settings.vgpr_comp_cnt;
+    runtime.props.num_allocated_vgprs = pgm.NumVgprs();
+    runtime.props.fp_round_mode32 = pgm.settings.fp_round_mode32;
+    runtime.props.fp_round_mode16_64 = pgm.settings.fp_round_mode64;
+    runtime.props.fp_denorm_mode32 = pgm.settings.fp_denorm_mode32;
+    runtime.props.fp_denorm_mode16_64 = pgm.settings.fp_denorm_mode64;
+    if (runtime.props.num_user_data > 16) throw std::runtime_error("Too many user registers");
+    auto& fragment = runtime.hw.fs;
+    fragment.en_flags = std::bit_cast<AmdGpu::PsInput>(regs[6]);
+    fragment.addr_flags = std::bit_cast<AmdGpu::PsInput>(regs[7]);
+    fragment.front_face_all_bits = std::bit_cast<AmdGpu::BarycentricControl>(regs[9]).front_face_all_bits;
+    fragment.z_export_format = static_cast<AmdGpu::ShaderExportFormat>(regs[4]);
+    const auto depth = std::bit_cast<AmdGpu::DepthShaderControl>(regs[10]);
+    const bool stencil = depth.stencil_op_val_export_enable || depth.stencil_test_val_export_enable;
+    fragment.mrtz_mask = depth.z_export_enable | (u32(stencil) << 1) |
+        (depth.mask_export_enable << 2) | (depth.coverage_to_mask_enable << 3);
+    for (u32 i = 0; i < MaxColorBuffers; ++i) {
+        auto& color = fragment.color_buffers[i];
+        // Explicit target variant, not a claim about every attachment used by
+        // this material. Other formats and stage linkage remain planner work.
+        if (target == "depth-only") continue;
+        const auto export_format = static_cast<AmdGpu::ShaderExportFormat>((regs[5] >> (i * 4)) & 15);
+        if (u32(export_format) == 0) continue;
+        color.data_format = AmdGpu::DataFormat::Format8_8_8_8;
+        color.num_format = AmdGpu::NumberFormat::Unorm;
+        color.export_format = export_format;
+        color.swizzle = {.r = AmdGpu::CompSwizzle::Red, .g = AmdGpu::CompSwizzle::Green,
+                         .b = AmdGpu::CompSwizzle::Blue, .a = AmdGpu::CompSwizzle::Alpha};
+    }
+    return c;
 }
 
 static int Compile(const fs::path& metadata, const fs::path& profile_path,
                    const fs::path& code_path, const fs::path& reference_path,
-                   const fs::path& output) {
-    auto c = ReadCase(metadata);
+                   const fs::path& output, std::string_view asset_target = {}) {
+    const bool asset_only = !asset_target.empty();
+    auto c = asset_only ? ReadAssetCase(metadata, asset_target) : ReadCase(metadata);
     Describe(metadata, c);
     if (c.recorded.hw_stage != HwStage::Fragment || c.spec.fetch_shader_data) {
         throw std::runtime_error("First replay proof supports fragment shaders only");
@@ -161,8 +259,9 @@ static int Compile(const fs::path& metadata, const fs::path& profile_path,
     std::memcpy(code.data(), bytes.data(), bytes.size());
     if (code.front() != 0xBEEB03FF) throw std::runtime_error("Missing original shader token");
     const auto reference_name = fmt::format("0x{:016x}_{}.spv", c.recorded.pgm_hash, c.permutation);
-    if (reference_path.filename() != reference_name) throw std::runtime_error("Reference identity mismatch");
-    const auto reference = ReadFile(reference_path);
+    if (!reference_path.empty() && reference_path.filename() != reference_name) {
+        throw std::runtime_error("Reference identity mismatch");
+    }
     // Fresh compiler Info: retain descriptors, not the old compiler's derived
     // resource lists, flags, program address, or walker.
     Info info;
@@ -178,17 +277,27 @@ static int Compile(const fs::path& metadata, const fs::path& profile_path,
     auto runtime = c.spec.runtime_info;
     auto binding = c.spec.start;
     const auto ir = TranslateProgram(code, pools, info, runtime, profile);
+    if (asset_only && (!info.buffers.empty() || !info.images.empty() || !info.samplers.empty() ||
+                       !info.fmasks.empty() || info.ud_mask.mask)) {
+        throw std::runtime_error("Asset-only shader needs resource or user-data specialization");
+    }
     const auto spirv = Backend::SPIRV::EmitSPIRV(profile, runtime, ir, binding);
     const auto result = std::as_bytes(std::span(spirv));
     std::ofstream file(output, std::ios::binary);
     file.write(reinterpret_cast<const char*>(result.data()), result.size());
     file.close();
     if (!file) throw std::runtime_error("Could not write fresh compilation output");
+    if (reference_path.empty()) {
+        std::cout << fmt::format("{{\"fresh_compile\":true,\"uses_recorded_specialization\":false,"
+                                "\"has_reference\":false,\"output_bytes\":{}}}\n", result.size());
+        return 0;
+    }
+    const auto reference = ReadFile(reference_path);
     const bool equal = result.size() == reference.size() &&
         std::memcmp(result.data(), reference.data(), result.size()) == 0;
-    std::cout << fmt::format("{{\"fresh_compile\":true,\"byte_equal\":{},"
+    std::cout << fmt::format("{{\"fresh_compile\":true,\"uses_recorded_specialization\":{},\"byte_equal\":{},"
         "\"output_bytes\":{},\"reference_bytes\":{}}}\n",
-        equal ? "true" : "false", result.size(), reference.size());
+        asset_only ? "false" : "true", equal ? "true" : "false", result.size(), reference.size());
     return equal ? 0 : 3;
 }
 
@@ -199,6 +308,14 @@ int main(int argc, char** argv) {
         // Same default as the UWP host; this also affects image specialization.
         if (!std::getenv("GOW3_NO_MSAA")) _putenv_s("GOW3_NO_MSAA", "1");
         AmdGpu::no_msaa.store(std::string_view(std::getenv("GOW3_NO_MSAA")) != "0");
+        if (argc == 3 && std::string_view(argv[1]) == "inspect") {
+            Describe(argv[2], ReadCase(argv[2]), true);
+            return 0;
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "inspect-asset") {
+            Describe(argv[2], ReadAssetCase(argv[2], "depth-only"), true);
+            return 0;
+        }
         if (argc == 3 && std::string_view(argv[1]) == "list") {
             for (const auto& file : fs::directory_iterator(argv[2])) {
                 if (file.path().extension() == ".meta") Describe(file.path(), ReadCase(file.path()));
@@ -208,8 +325,17 @@ int main(int argc, char** argv) {
         if (argc == 7 && std::string_view(argv[1]) == "compile") {
             return Compile(argv[2], argv[3], argv[4], argv[5], argv[6]);
         }
+        if (argc == 8 && std::string_view(argv[1]) == "compile-asset") {
+            return Compile(argv[3], argv[4], argv[5], argv[6], argv[7], argv[2]);
+        }
+        if (argc == 7 && std::string_view(argv[1]) == "emit-asset") {
+            return Compile(argv[3], argv[4], argv[5], {}, argv[6], argv[2]);
+        }
         std::cerr << "Usage: gow3-offline-shader list CACHE\n"
-                  << "       gow3-offline-shader compile META PROFILE GCN REFERENCE OUTPUT\n";
+                  << "       gow3-offline-shader compile META PROFILE GCN REFERENCE OUTPUT\n"
+                  << "       gow3-offline-shader compile-asset TARGET PSH PROFILE GCN REFERENCE OUTPUT\n"
+                  << "       gow3-offline-shader emit-asset TARGET PSH PROFILE GCN OUTPUT\n"
+                  << "       TARGET: depth-only or rgba8\n";
         return 2;
     } catch (const std::exception& error) {
         std::cerr << "Offline shader: " << error.what() << '\n';

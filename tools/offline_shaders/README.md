@@ -6,9 +6,11 @@ eventual target is an Xbox launcher action that builds a local cache for the
 whole game without requiring a prior playthrough.
 
 The extractor and headless compiler can freshly compile extracted fragment
-programs using recorded specialization data. **Asset-independent specialization
-and an importable whole-game runtime cache are not implemented yet.** No launcher
-or runtime behavior changes are included.
+programs using recorded specialization data. A small resource-free fragment
+subset also compiles from asset headers without recorded specialization data.
+**A complete asset-derived specialization plan and an importable whole-game
+runtime cache are not implemented yet.** No launcher or runtime behavior changes
+are included.
 
 ## Running the inventory
 
@@ -104,10 +106,78 @@ This is a recorded-specialization replay proof, not whole-game precompilation.
 Native `.meta` version 7 and unsalted shader version 7 are required. Vertex fetch,
 other stages, and alternate native cache layouts are deliberately rejected.
 
-## Next proof: replace recorded specialization inputs
+## Asset-derived register and stage-linkage plan
 
-Remove the dependence on the runtime case by reconstructing equivalent inputs
-from the assets. Repeating a stored
+```powershell
+python tools/offline_shaders/assets.py xbox/.local/offline-shaders/all-wads-02/report.json `
+  --output xbox/.local/offline-shaders/new-asset-headers
+python tools/offline_shaders/plan.py xbox/.local/offline-shaders/all-wads-02/report.json `
+  xbox/.local/offline-shaders/new-asset-headers/assets.json `
+  --output xbox/.local/offline-shaders/new-material-plan.json
+```
+
+`assets.py` reads each inventoried program's packed register header, usage-slot
+table, and vertex fetch/export or fragment-input semantic tables. It validates
+the relative code location and table sizes. The default output is one manifest;
+use `--hash <original-hash> --recipes` to generate a small selection of standalone
+recipe files for direct worker experiments. Original game bytes stay private.
+
+`plan.py` pairs adjacent vertex/fragment programs within their actual source
+material entries and matches fragment input semantics to vertex exports. Hash
+prefix matching alone is insufficient: 68 material pairs have different vertex
+and fragment prefixes. Optional `--cases <worker-list.jsonl>` validates recovered
+settings against recorded cases; those cases do not build or change the plan.
+
+Measured asset results:
+
+- All **97,544 vertex/fragment register headers** recovered without format failures.
+- All **48,772 material shader pairs** linked without missing semantics.
+- Recovered common register settings agree with **570 recorded cases**.
+- Recovered fragment parameter indices agree with **270 recorded cases**.
+- Six materials have an additional semantic flag whose interpretation remains
+  unresolved; it is preserved explicitly in the plan.
+
+These counts refer to original identities; many share identical instruction
+bytes. The private baseline manifests are `asset-headers-02/assets.json` and
+`material-plan-02.json` in `xbox/.local/offline-shaders`.
+
+## Compilation without recorded shader specializations
+
+The worker's `compile-asset TARGET PSH PROFILE GCN REFERENCE OUTPUT` mode builds
+fragment settings from the asset header and an explicit target variant. It reads
+no `.meta` file. `emit-asset TARGET PSH PROFILE GCN OUTPUT` also requires no
+reference SPIR-V. The target GPU's compiler profile is still required; the final
+Xbox launcher would obtain that from its renderer/device.
+
+The initial independent depth-only compile of `0x683cb941b24f0169` produced the
+same **2,252 SPIR-V bytes** as the recorded reference. The asset's color-export
+declaration alone does not identify the draw's active render targets: the
+reference used a depth-only pass. An explicit RGBA8 target produces a different
+variant, as expected.
+
+```powershell
+python tools/offline_shaders/emit.py xbox/.local/offline-shaders/all-wads-02/report.json `
+  xbox/.local/offline-shaders/asset-headers-02/assets.json `
+  --profile <target-GPU-profile.bin> `
+  --worker xbox/.local/build/gpu/gow3-offline-shader.exe `
+  --target depth-only --target rgba8 `
+  --output xbox/.local/offline-shaders/new-independent-batch
+```
+
+Measured independent batch: **79 asset shader identities, five distinct code
+sequences, two explicit target variants: 158 fresh compilations, zero failures**.
+This path supports only fragment headers without usage slots/input semantics
+and rejects shaders that discover resources or user-data specialization. It is
+a deliberately small supported subset, not a whole-game cache. Fresh outputs
+beyond the byte-matched proof have not been exercised in gameplay.
+
+## Remaining work
+
+Extend independent compilation to textured materials and vertex shaders by
+reconstructing their mesh buffer formats, texture/sampler descriptors, and
+binding layout. Resolve the remaining semantic flags and enumerate actual pass
+attachment/blend/depth variants before producing runtime-importable entries.
+Repeating a stored
 SPIR-V file or replaying only previously collected pipelines would not meet the
 whole-game goal.
 
@@ -119,9 +189,9 @@ bounded, validated enumeration of variants.
 
 The existing `.meta` files provide useful specialization references but are
 native-layout structures and include resource-table walker machine code.
-`Info::RefreshFlatBuf` can follow guest pointers. An offline worker must supply
-descriptors and fetch data without following old process addresses; loading a
-cached specialization is not sufficient to regenerate it safely or independently.
+`Info::RefreshFlatBuf` can follow guest pointers. The worker supplies captured
+descriptors without following old process addresses for replay, but the general
+asset-derived descriptor/fetch-data provider still needs implementing.
 Keep the experiment outside active runtime caches until fresh output is checked.
 
 Useful prior art: [KytyPS5 Shaders Lab](https://github.com/Almo7aya/KytyPS5-Shaders-Lab)
@@ -135,10 +205,11 @@ game's complete PS4-to-Dozen asset/state reconstruction.
 ## Checks
 
 ```powershell
-python -m unittest discover -s tools/offline_shaders -p test_scan.py -v
+python -m unittest discover -s tools/offline_shaders -p 'test_*.py' -v
 ```
 
 The synthetic fixtures cover unaligned programs, metadata bounds, duplicate
 code/header aliases, truncated archives, count records, reference validation,
-and the distinction between identity and byte equality. No game bytes or
+the distinction between identity and byte equality, packed vertex/fragment
+tables, semantic mapping, and pairing from source order. No game bytes or
 machine-specific configuration are included in the tests.
