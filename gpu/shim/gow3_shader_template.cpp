@@ -111,6 +111,15 @@ std::optional<u32> DescriptorConstant(u32 slot, const Shader::Info &info) {
                                        u32(mapping.b), u32(mapping.a)};
     return values[component];
   }
-  return {};
+    if (slot >= OfflineSlot::Swizzle + 32 * 4 &&
+        slot < OfflineSlot::Swizzle + 32 * 4 + NUM_BUFFERS * 4) {
+        const u32 relative = slot - OfflineSlot::Swizzle - 32 * 4;
+        const u32 index = relative / 4, component = relative % 4;
+        if (index >= info.buffers.size()) return {};
+        const auto mapping = info.buffers[index].GetSharp(info).DstSelect();
+        const std::array<u32, 4> values{u32(mapping.r), u32(mapping.g), u32(mapping.b), u32(mapping.a)};
+        return values[component];
+    }
+    return {};
 }
 } // namespace Gow3Precompile

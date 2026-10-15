@@ -558,13 +558,19 @@ IR::U32 CalculateBufferAddress(IR::IREmitter& ir, const IR::Inst& inst, const In
 
     // If address calculation is of the form "index * const_stride + offset" with offset constant
     // and both const_stride and offset are divisible with the element size, apply shift directly.
-    if (!parametric && inst_info.index_enable && !inst_info.voffset_enable && soffset.IsImmediate() &&
+    if (inst_info.index_enable && !inst_info.voffset_enable && soffset.IsImmediate() &&
         !buffer.swizzle_enable && !buffer.add_tid_enable && (stride & mask) == 0) {
         const u32 total_offset = soffset.U32() + inst_offset;
         if ((total_offset & mask) == 0) {
             // buffer_offset = index * (const_stride >> shift) + (offset >> shift)
             const IR::U32 index = IR::GetBufferIndexArg(&inst);
-            return ir.IAdd(ir.IMul(index, ir.Imm32(stride >> shift)),
+            // Preserve the ordinary compiler's order of integer operations.
+            // (index * stride) >> shift differs after u32 wraparound from
+            // index * (stride >> shift). Prepared lookup requires aligned strides.
+            const auto step = parametric
+                ? IR::U32{ir.ShiftRightLogical(ir.OfflineConstant(stride, OfflineSlot::Stride + inst.Arg(0).U32()), ir.Imm32(shift))}
+                : ir.Imm32(stride >> shift);
+            return ir.IAdd(ir.IMul(index, step),
                            ir.Imm32(total_offset >> shift));
         }
     }

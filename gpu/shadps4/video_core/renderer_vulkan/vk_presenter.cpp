@@ -197,7 +197,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                         const auto now=std::chrono::steady_clock::now();
                         if(now-last<std::chrono::milliseconds(100)&&progress.done!=progress.total) return;
                         last=now;
-                        Gow3Overlay::SetLoadingLabel(progress.scanning ? "Scanning game files..." : "Precompiling shaders...");
+                        Gow3Overlay::SetLoadingLabel(progress.scanning ? "Scanning game files..." :
+                            progress.vertex ? "Precompiling vertex shaders..." : "Precompiling fragment shaders...");
                         Gow3Overlay::SetLoading(true,progress.done,progress.total);
                         PresentLoadingFrame();
                     });

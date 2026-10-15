@@ -107,7 +107,8 @@ class AssetInputs final : public Shader::OfflineMemory {
 };
 
 inline Shader::Gcn::FetchShaderSnapshot AssetFetch(std::span<const u32> semantics,
-                                                 std::span<const u32> usages, bool skinned = false) {
+                                                 std::span<const u32> usages, bool skinned = false,
+                                                 bool unsigned_indices = false) {
     Shader::Gcn::FetchShaderSnapshot result;
     result.fetch.emplace();
     result.fetch->size = semantics.size() * 12 + 12;
@@ -149,7 +150,7 @@ inline Shader::Gcn::FetchShaderSnapshot AssetFetch(std::span<const u32> semantic
             buffer.dst_sel_x = buffer.dst_sel_y = buffer.dst_sel_z = u32(AmdGpu::CompSwizzle::Zero);
             buffer.dst_sel_w = u32(AmdGpu::CompSwizzle::One);
         }
-        if(semantic==15&&skinned) buffer.num_format=u32(AmdGpu::NumberFormat::Uint);
+        if(semantic==15&&skinned) buffer.num_format=u32(unsigned_indices ? AmdGpu::NumberFormat::Uint : AmdGpu::NumberFormat::Sint);
         result.buffers.push_back(buffer);
     }
     return result;

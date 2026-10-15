@@ -227,7 +227,8 @@ static void Describe(const fs::path& path, const Case& c, bool detailed = false)
 }
 
 static Case ReadVertexAssetCase(Reader& reader,std::string_view target,bool parametric) {
-    const bool skinned=target.ends_with("-skin");
+    const bool unsigned_indices=target.ends_with("-uint");
+    const bool skinned=target.ends_with("-skin")||unsigned_indices;
     if(skinned) target.remove_suffix(5);
     if(target!="vertex"&&target!="vertex-depth") throw std::runtime_error("Unknown vertex target variant");
     const auto version=reader.Value<u32>();
@@ -248,7 +249,7 @@ static Case ReadVertexAssetCase(Reader& reader,std::string_view target,bool para
     reader.Read(nullptr,(exports*2+3)&~3u);
     if(version==2) c.spec.start=reader.Value<Backend::Bindings>();
     c.asset_inputs=std::make_shared<Gow3Precompile::AssetInputs>(usages,0,parametric);
-    c.asset_fetch=Gow3Precompile::AssetFetch(semantics,usages,skinned);
+    c.asset_fetch=Gow3Precompile::AssetFetch(semantics,usages,skinned,unsigned_indices);
     c.recorded.hw_stage=HwStage::Vertex;c.recorded.sw_stage=SwStage::Vertex;
     c.flat.resize(16);c.flat_size=16;
     auto& runtime=c.spec.runtime_info;
@@ -614,8 +615,22 @@ int main(int argc, char** argv) {
             info.user_data = std::span(c.flat).first(c.spec.runtime_info.props.num_user_data);
             info.flattened_ud_buf = c.flat;
             info.offline_descriptor_snapshot = true;
+            Gcn::FetchShaderSnapshot captured{.fetch = c.spec.fetch_shader_data};
+            if (captured.fetch) {
+                if (captured.fetch->attributes.size() != c.spec.vs_attribs.size())
+                    throw std::runtime_error("Captured vertex format count mismatch");
+                for (const auto& attribute : c.spec.vs_attribs) {
+                    auto buffer = AmdGpu::Buffer::Placeholder(1);
+                    buffer.num_format = u32(attribute.num_class == AmdGpu::NumberClass::Uint ? AmdGpu::NumberFormat::Uint :
+                        attribute.num_class == AmdGpu::NumberClass::Sint ? AmdGpu::NumberFormat::Sint : AmdGpu::NumberFormat::Float);
+                    buffer.dst_sel_x = u32(attribute.dst_select.r); buffer.dst_sel_y = u32(attribute.dst_select.g);
+                    buffer.dst_sel_z = u32(attribute.dst_select.b); buffer.dst_sel_w = u32(attribute.dst_select.a);
+                    captured.buffers.push_back(buffer);
+                }
+            }
             std::vector<u32> spv;
-            if (!Gow3Precompile::TryLoadAt(argv[2], info, c.spec.runtime_info, code, profile, spv))
+            if (!Gow3Precompile::TryLoadAt(argv[2], info, c.spec.runtime_info, code, profile, spv,
+                    c.spec.start, captured.fetch ? &captured : nullptr))
                 return 4;
             if (std::string_view(argv[1]) == "emit-precompiled") {
                 if (fs::exists(argv[6])) throw std::runtime_error("Resolved output must be new");
@@ -635,7 +650,7 @@ int main(int argc, char** argv) {
                 fresh.pgm_hash = info.pgm_hash;
                 std::vector<u32> output;
                 if (Gow3Precompile::TryLoadAt(argv[2], fresh, runtime, changed_code, target,
-                                              output) ||
+                                              output, c.spec.start) ||
                     !output.empty())
                     throw std::runtime_error("Precompile cache accepted mismatched inputs");
             };
@@ -643,7 +658,7 @@ int main(int argc, char** argv) {
             changed_code.back() ^= 1;
             misses(changed_code, c.spec.runtime_info, profile);
             auto changed_runtime = c.spec.runtime_info;
-            changed_runtime.hw.fs.num_samples = 2;
+            ++changed_runtime.props.num_allocated_vgprs;
             misses(code, changed_runtime, profile);
             auto changed_profile = profile;
             changed_profile.needs_unorm_fixup = true;

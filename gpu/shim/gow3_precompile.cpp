@@ -48,6 +48,7 @@ u16 U16(const u8* p) {
 }
 struct Candidate {
     u64 hash{}, code_hash{}, signature{};
+    u64 fragment{};
     std::array<u32, 13> regs{};
     std::vector<u32> parameters, usages, code;
 };
@@ -72,7 +73,7 @@ std::optional<Program> ProgramAt(std::span<const u8> data, size_t at) {
                    length, (U32(footer + 8) >> 2) & 15, footer[13]};
 }
 bool VertexExports(std::span<const u8> data, const Program& p,
-                   std::unordered_map<u32, u32>& exports) {
+                   std::unordered_map<u32, u32>& exports, Candidate* candidate = nullptr) {
     for (size_t size = 32; size <= std::min(p.start, size_t(1244)); size += 4) {
         const auto* h = data.data() + p.start - size;
         if (U32(h) != size + 8 || U32(h + 4) != 0xffffffff)
@@ -87,6 +88,24 @@ bool VertexExports(std::span<const u8> data, const Program& p,
             const u16 value = U16(table + i * 2);
             if (!exports.emplace(value & 255, value >> 8).second)
                 return false;
+        }
+        if (candidate) {
+            if (U32(h + 24)) return false;
+            candidate->hash = p.hash;
+            std::memcpy(candidate->regs.data(), h, 32);
+            candidate->usages.resize(p.usages);
+            std::memcpy(candidate->usages.data(), h + 32, p.usages * 4);
+            candidate->parameters.resize(inputs);
+            std::memcpy(candidate->parameters.data(), h + 32 + p.usages * 4, inputs * 4);
+            candidate->code.resize(p.bytes / 4);
+            std::memcpy(candidate->code.data(), data.data() + p.start, p.bytes);
+            candidate->code_hash = XXH3_64bits(candidate->code.data(), p.bytes);
+            std::vector<u32> signature(candidate->regs.begin() + 2, candidate->regs.end());
+            signature.insert(signature.end(), candidate->usages.begin(), candidate->usages.end());
+            signature.insert(signature.end(), candidate->parameters.begin(), candidate->parameters.end());
+            signature.push_back(u32(candidate->code_hash));
+            signature.push_back(u32(candidate->code_hash >> 32));
+            candidate->signature = XXH3_64bits(signature.data(), signature.size() * 4);
         }
         return true;
     }
@@ -177,7 +196,8 @@ s64 Tell(FILE* file) {
 #endif
 }
 void Scan(const fs::path& path, std::unordered_set<u64>& all,
-          std::unordered_map<u64, Candidate>& candidates) {
+          std::unordered_map<u64, Candidate>& candidates,
+          std::unordered_map<u64, Candidate>& vertices) {
     FILE* file = OpenDump(path);
     if (!file)
         throw std::runtime_error("Cannot read shader archive: " + path.filename().string());
@@ -207,6 +227,7 @@ void Scan(const fs::path& path, std::unordered_set<u64>& all,
             if (std::fread(payload.data(), 1, size, file) != size)
                 throw std::runtime_error("Truncated material");
             std::unordered_map<u32, u32> exports;
+            std::optional<Candidate> vertex;
             for (size_t at = 0; at + 8 <= payload.size(); ++at) {
                 auto program = ProgramAt(payload, at);
                 if (!program)
@@ -214,10 +235,17 @@ void Scan(const fs::path& path, std::unordered_set<u64>& all,
                 all.insert(program->hash);
                 if (program->type == 1) {
                     exports.clear();
-                    VertexExports(payload, *program, exports);
+                    vertex.emplace();
+                    if (!VertexExports(payload, *program, exports, &*vertex)) vertex.reset();
                 } else if (program->type == 0) {
-                    if (auto candidate = Fragment(payload, *program, exports))
+                    if (auto candidate = Fragment(payload, *program, exports)) {
                         candidates.try_emplace(candidate->hash, std::move(*candidate));
+                        if (vertex) {
+                            vertex->fragment = program->hash;
+                            vertices.try_emplace(vertex->hash, std::move(*vertex));
+                        }
+                    }
+                    vertex.reset();
                     exports.clear();
                 }
             }
@@ -269,7 +297,7 @@ RuntimeInfo Runtime(const Candidate& c, u32 target) {
         }
     return r;
 }
-u64 RuntimeKey(const RuntimeInfo& r) {
+u64 RuntimeKey(const RuntimeInfo& r, Backend::Bindings start = {}) {
     std::vector<u32> words;
     auto add = [&](auto value) { words.push_back(u32(value)); };
     add(r.hw_stage);
@@ -281,6 +309,18 @@ u64 RuntimeKey(const RuntimeInfo& r) {
     add(r.props.num_user_data);
     add(r.props.num_input_vgprs);
     add(r.props.num_allocated_vgprs);
+    if (r.hw_stage == HwStage::Vertex) {
+        add(start.unified); add(start.buffer); add(start.user_data);
+        const auto& v = r.hw.vs;
+        add(v.num_outputs);
+        for (const auto& output : v.outputs) for (const auto value : output) add(value);
+        add(v.emulate_depth_negative_one_to_one); add(v.clip_disable);
+        add(v.user_clip_plane_mask); add(v.motion_vectors);
+        add(r.sw.vs.step_rate_0); add(r.sw.vs.step_rate_1);
+        add(r.sw.vs.vertex_sgpr_offset); add(r.sw.vs.instance_sgpr_offset);
+        add(r.sw.vs.tess_emulated_primitive);
+        return XXH3_64bits(words.data(), words.size() * 4);
+    }
     const auto& f = r.hw.fs;
     add(std::bit_cast<u32>(f.en_flags));
     add(std::bit_cast<u32>(f.addr_flags));
@@ -372,6 +412,110 @@ void Write(const fs::path& folder, const Candidate& c, const RuntimeInfo& runtim
     fs::remove(path, error);
     fs::rename(temp, path);
 }
+Summary PrepareVertices(const std::unordered_map<u64, Candidate>& vertices,
+                        const std::unordered_map<u64, Candidate>& fragments,
+                        const fs::path& cache, const Profile& profile, u64 parent_library,
+                        const Update& update) {
+    struct Job { const Candidate* shader; std::vector<Backend::Bindings> starts; u32 classes; };
+    std::vector<Job> jobs;
+    std::vector<std::array<u64, 3>> inventory;
+    std::unordered_set<u64> distinct;
+    Progress progress;
+    progress.scanning = false;
+    progress.vertex = true;
+    Summary result;
+    for (const auto& [hash, c] : vertices) {
+        const auto paired = fragments.find(c.fragment);
+        if (paired == fragments.end()) { ++result.skipped; continue; }
+        auto starts = TemplateBindingVariants(cache, c.fragment, paired->second.code_hash, profile);
+        if (starts.empty()) { ++result.skipped; continue; }
+        const bool bones = std::ranges::any_of(c.parameters, [](u32 s) { return (s & 255) == 15; });
+        const u32 classes = bones ? 3 : 1;
+        progress.total += starts.size() * 2 * classes;
+        inventory.push_back({hash, c.signature, c.fragment});
+        distinct.insert(c.code_hash);
+        jobs.push_back({&c, std::move(starts), classes});
+    }
+    result.supported = jobs.size();
+    result.distinct_programs = distinct.size();
+    progress.supported = jobs.size();
+    if (update) update(progress);
+    if (jobs.empty()) return result;
+    std::sort(inventory.begin(), inventory.end());
+    inventory.push_back({parent_library, 0, 0});
+    const u64 library = XXH3_64bits(inventory.data(), inventory.size() * sizeof(inventory[0]));
+    const auto directory = cache / "vertex";
+    u32 previous_entries = 0;
+    if (TemplatesReady(directory, profile, library, previous_entries) && previous_entries == progress.total) {
+        result.prepared_entries = jobs.size();
+        result.already_cached = previous_entries;
+        progress.done = progress.total;
+        if (update) update(progress);
+        std::printf("Precompile reused: %u vertex identities, %u variants\n", result.prepared_entries, previous_entries);
+        return result;
+    }
+    TemplateWriter writer(directory, profile, library);
+    std::map<std::array<u64, 3>, TemplateLocation> compiled;
+    Pools pools;
+    for (const auto& job : jobs) {
+        const auto& c = *job.shader;
+        bool ready = false;
+        for (const auto& start : job.starts) for (u32 depth = 0; depth < 2; ++depth)
+            for (u32 bone_class = 0; bone_class < job.classes; ++bone_class) {
+                try {
+                    RuntimeInfo runtime{};
+                    runtime.Initialize(HwStage::Vertex, SwStage::Vertex);
+                    AmdGpu::ShaderProgram pgm{};
+                    std::memcpy(&pgm.settings, c.regs.data() + 2, 8);
+                    runtime.props = {pgm.settings.fp_denorm_mode32, pgm.settings.fp_denorm_mode64,
+                        pgm.settings.fp_round_mode32, pgm.settings.fp_round_mode64,
+                        pgm.settings.num_user_regs, pgm.settings.vgpr_comp_cnt, pgm.NumVgprs()};
+                    runtime.hw.vs.emulate_depth_negative_one_to_one = depth;
+                    if (runtime.props.num_user_data > 16) throw std::runtime_error("Invalid vertex register count");
+                    const auto key = RuntimeKey(runtime, start);
+                    const std::array<u64, 3> identity{c.signature, key, bone_class};
+                    if (auto found = compiled.find(identity); found != compiled.end()) {
+                        writer.Alias(found->second, c.hash);
+                        ++result.already_cached;
+                        ready = true;
+                    } else {
+                        Info info;
+                        info.hw_stage = HwStage::Vertex;
+                        info.sw_stage = SwStage::Vertex;
+                        info.pgm_hash = c.hash;
+                        info.pgm_base = 0;
+                        AssetInputs inputs(c.usages, 0, true);
+                        info.offline_memory = &inputs;
+                        info.offline_descriptor_snapshot = true;
+                        info.user_data = inputs.UserData().first(runtime.props.num_user_data);
+                        auto fetch = AssetFetch(c.parameters, c.usages, bone_class != 0, bone_class == 2);
+                        fetch.info = &info;
+                        Gcn::ScopedFetchShaderSnapshot scope(fetch);
+                        const auto ir = TranslateProgram(c.code, pools, info, runtime, profile);
+                        auto binding = start;
+                        const auto spirv = Backend::SPIRV::EmitSPIRV(profile, runtime, ir, binding);
+                        const auto location = writer.Write(c.code_hash, key, info, spirv, &fetch);
+                        writer.Alias(location, c.hash);
+                        compiled.emplace(identity, location);
+                        ++result.compiled;
+                        ready = true;
+                    }
+                } catch (const std::exception& error) {
+                    ++result.failed;
+                    std::printf("Precompile vertex skipped %016llx: %s\n", c.hash, error.what());
+                }
+                pools.ReleaseContents();
+                ++progress.done;
+                progress.failed = result.failed;
+                if (update) update(progress);
+            }
+        if (ready) ++result.prepared_entries;
+    }
+    writer.Finish();
+    std::printf("Precompile vertices: %u identities, %u distinct programs, %u compiled, %u aliases, %u failed\n",
+        result.prepared_entries, result.distinct_programs, result.compiled, result.already_cached, result.failed);
+    return result;
+}
 } // namespace
 
 std::filesystem::path CacheDirectory() {
@@ -387,10 +531,11 @@ Summary Prepare(const fs::path& dump, const fs::path& cache, const Profile& prof
         throw std::runtime_error("No game shader archives found");
     std::unordered_set<u64> all;
     std::unordered_map<u64, Candidate> candidates;
+    std::unordered_map<u64, Candidate> vertices;
     Progress progress;
     progress.total = files.size();
     for (const auto& path : files) {
-        Scan(path, all, candidates);
+        Scan(path, all, candidates, vertices);
         ++progress.done;
         progress.supported = candidates.size();
         progress.skipped = all.size() - candidates.size();
@@ -412,6 +557,16 @@ Summary Prepare(const fs::path& dump, const fs::path& cache, const Profile& prof
     }
     std::sort(inventory.begin(), inventory.end());
     const u64 library = XXH3_64bits(inventory.data(), inventory.size() * sizeof(inventory[0]));
+    const auto finish_vertices = [&] {
+        const auto v = PrepareVertices(vertices, candidates, cache, profile, library, update);
+        result.supported += v.supported;
+        result.prepared_entries += v.prepared_entries;
+        result.distinct_programs += v.distinct_programs;
+        result.skipped = result.skipped - vertices.size() + v.skipped;
+        result.compiled += v.compiled;
+        result.already_cached += v.already_cached;
+        result.failed += v.failed;
+    };
     result.distinct_programs = distinct.size();
     progress.scanning = false;
     progress.done = 0;
@@ -424,6 +579,7 @@ Summary Prepare(const fs::path& dump, const fs::path& cache, const Profile& prof
         if (update) update(progress);
         std::printf("Precompile reused: %u shader identities, %u prepared variants\n",
                     result.prepared_entries, previous_entries);
+        finish_vertices();
         return result;
     }
     TemplateWriter writer(cache, profile, library);
@@ -477,6 +633,7 @@ Summary Prepare(const fs::path& dump, const fs::path& cache, const Profile& prof
             ++result.prepared_entries;
     }
     writer.Finish();
+    finish_vertices();
     std::printf("Precompile complete: %u shader entries, %u distinct programs, "
                 "%u compiled, %u cached, %u skipped, %u failed\n",
                 result.supported, result.distinct_programs, result.compiled, result.already_cached,
@@ -484,17 +641,21 @@ Summary Prepare(const fs::path& dump, const fs::path& cache, const Profile& prof
     return result;
 }
 bool TryLoad(Info& info, const RuntimeInfo& runtime, std::span<const u32> code,
-             const Profile& profile, std::vector<u32>& spirv) {
-    return TryLoadAt(CacheDirectory(), info, runtime, code, profile, spirv);
+             const Profile& profile, std::vector<u32>& spirv, Backend::Bindings start) {
+    return TryLoadAt(CacheDirectory(), info, runtime, code, profile, spirv, start);
 }
 bool TryLoadAt(const fs::path& cache, Info& info, const RuntimeInfo& runtime,
-               std::span<const u32> code, const Profile& profile, std::vector<u32>& spirv) {
-    if (runtime.hw_stage != HwStage::Fragment || runtime.sw_stage != SwStage::Fragment ||
-        runtime.hw.fs.num_inputs > 32 || profile.needs_unorm_fixup)
+               std::span<const u32> code, const Profile& profile, std::vector<u32>& spirv,
+               Backend::Bindings start, const Gcn::FetchShaderSnapshot* captured_fetch) {
+    const bool vertex = runtime.hw_stage == HwStage::Vertex && runtime.sw_stage == SwStage::Vertex;
+    if ((!vertex && (runtime.hw_stage != HwStage::Fragment || runtime.sw_stage != SwStage::Fragment ||
+        runtime.hw.fs.num_inputs > 32)) || profile.needs_unorm_fixup)
         return false;
     Header header;
     try {
         const auto code_hash = XXH3_64bits(code.data(), code.size_bytes());
+        if (vertex) return TryTemplate(cache / "vertex", RuntimeKey(runtime, start), code_hash,
+                                      info, runtime, profile, spirv, captured_fetch);
         if (!Read(cache, info.pgm_hash, code_hash, runtime, profile, spirv, header))
             return TryTemplate(cache, RuntimeKey(runtime), code_hash, info, runtime, profile, spirv);
     } catch (const std::exception&) {

@@ -4,6 +4,8 @@
 #include "shader_recompiler/specialization.h"
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include <fstream>
 #include <mutex>
 #include <unordered_map>
@@ -13,7 +15,7 @@ namespace Gow3Precompile {
 namespace {
 using namespace Shader;
 namespace fs = std::filesystem;
-constexpr u32 Version = 1;
+constexpr u32 Version = 3;
 struct LibraryHeader {
     u32 magic = 0x31495447, version = Version, info_size = sizeof(InfoPersistent), count = 0;
     Profile profile{};
@@ -34,13 +36,12 @@ std::shared_ptr<Index> ReadIndex(const fs::path& cache, const Profile& profile) 
     if (error)
         return {};
     static std::mutex mutex;
-    static fs::path previous;
-    static fs::file_time_type previous_time;
-    static std::shared_ptr<Index> previous_index;
+    struct Cached { fs::file_time_type time; std::shared_ptr<Index> index; };
+    static std::unordered_map<fs::path, Cached> cached;
     std::scoped_lock lock{mutex};
-    if (previous == path && previous_time == time && previous_index &&
-        previous_index->header.profile == profile)
-        return previous_index;
+    if (auto found = cached.find(path); found != cached.end() && found->second.time == time &&
+        found->second.index->header.profile == profile)
+        return found->second.index;
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     const auto size = file.tellg();
     LibraryHeader header;
@@ -65,9 +66,7 @@ std::shared_ptr<Index> ReadIndex(const fs::path& cache, const Profile& profile) 
             return {};
         index->entries.emplace(e.hash, e);
     }
-    previous = path;
-    previous_time = time;
-    previous_index = index;
+    cached[path] = {time, index};
     return index;
 }
 template <class T> void Append(std::vector<u8>& out, const T& data) {
@@ -97,11 +96,18 @@ struct Reader {
 // Match every descriptor property that was fixed during translation. The
 // explicitly deferred fields are resolved in the already compiled SPIR-V.
 bool Compatible(const Info& baseline, const Info& current, const RuntimeInfo& runtime,
-                const Profile& profile) {
-    if (!baseline.fmasks.empty() || baseline.has_fetch_shader)
+                const Profile& profile, const Gcn::FetchShaderSnapshot& fetch) {
+    if (!baseline.fmasks.empty() || (baseline.has_fetch_shader && !fetch.fetch))
         return false;
-    const StageSpecialization expected(baseline, runtime, profile, {});
+    StageSpecialization expected;
+    {
+        Gcn::ScopedFetchShaderSnapshot scope(fetch);
+        expected = StageSpecialization(baseline, runtime, profile, {});
+    }
     auto actual = StageSpecialization(current, runtime, profile, {});
+    if (actual.vs_attribs.size() != expected.vs_attribs.size()) return false;
+    for (size_t i = 0; i < actual.vs_attribs.size(); ++i)
+        actual.vs_attribs[i].dst_select = expected.vs_attribs[i].dst_select;
     for (size_t i = 0; i < baseline.buffers.size(); ++i) {
         const auto& desc = baseline.buffers[i];
         if (desc.IsSpecial())
@@ -112,7 +118,9 @@ bool Compatible(const Info& baseline, const Info& current, const RuntimeInfo& ru
                 return false;
             actual.buffers[i] = expected.buffers[i];
         } else {
+            if (sharp.GetStride() & 3) return false;
             actual.buffers[i].stride = expected.buffers[i].stride;
+            if (!desc.is_written) actual.buffers[i].dst_select = expected.buffers[i].dst_select;
             if (desc.is_written && sharp.mtype != desc.GetSharp(baseline).mtype)
                 return false;
         }
@@ -132,7 +140,32 @@ bool Compatible(const Info& baseline, const Info& current, const RuntimeInfo& ru
     }
     actual.samplers = expected.samplers;
     actual.bitset = expected.bitset;
-    return actual == expected;
+    const bool equal = actual == expected;
+    if (!equal && std::getenv("GOW3_PRECOMPILE_TRACE")) {
+        if (actual.fetch_shader_data != expected.fetch_shader_data) {
+            std::printf("Template fetch layout differs: actual=%zu expected=%zu\n",
+                actual.fetch_shader_data ? actual.fetch_shader_data->attributes.size() : 0,
+                expected.fetch_shader_data ? expected.fetch_shader_data->attributes.size() : 0);
+            if (actual.fetch_shader_data && expected.fetch_shader_data)
+                for (size_t i = 0; i < std::min(actual.fetch_shader_data->attributes.size(), expected.fetch_shader_data->attributes.size()); ++i) {
+                    const auto& a = actual.fetch_shader_data->attributes[i];
+                    const auto& e = expected.fetch_shader_data->attributes[i];
+                    if (!(a == e)) std::printf("Fetch %zu: actual semantic/vgpr/elements/table/offset=%u/%u/%u/%u/%u expected=%u/%u/%u/%u/%u\n",
+                        i, a.semantic, a.dest_vgpr, a.num_elements, a.sgpr_base, a.dword_offset,
+                        e.semantic, e.dest_vgpr, e.num_elements, e.sgpr_base, e.dword_offset);
+                }
+        }
+        for (size_t i = 0; i < actual.buffers.size(); ++i)
+            if (!(actual.buffers[i] == expected.buffers[i]))
+                std::printf("Template buffer %zu static format differs: actual=%u/%u swizzle=%u expected=%u/%u swizzle=%u\n",
+                    i, actual.buffers[i].data_format, actual.buffers[i].num_format, actual.buffers[i].swizzle_enable,
+                    expected.buffers[i].data_format, expected.buffers[i].num_format, expected.buffers[i].swizzle_enable);
+        for (size_t i = 0; i < actual.vs_attribs.size(); ++i)
+            if (!(actual.vs_attribs[i] == expected.vs_attribs[i]))
+                std::printf("Template attribute %zu class differs: actual=%u expected=%u\n", i,
+                    u32(actual.vs_attribs[i].num_class), u32(expected.vs_attribs[i].num_class));
+    }
+    return equal;
 }
 } // namespace
 
@@ -155,7 +188,8 @@ TemplateWriter::TemplateWriter(const fs::path& cache, const Profile& profile, u6
 }
 TemplateWriter::~TemplateWriter() = default;
 TemplateLocation TemplateWriter::Write(u64 code_hash, u64 runtime_key, const Info& info,
-                                       std::span<const u32> spirv) {
+                                       std::span<const u32> spirv,
+                                       const Gcn::FetchShaderSnapshot* fetch) {
     RecordHeader header;
     header.info = info;
     header.flags = u32(info.has_discard);
@@ -171,6 +205,15 @@ TemplateLocation TemplateWriter::Write(u64 code_hash, u64 runtime_key, const Inf
         Append(data, read.destination);
         AppendSpan(data, std::span(read.pointers));
     }
+    if (info.has_fetch_shader) {
+        if (!fetch || !fetch->fetch || fetch->fetch->attributes.size() != fetch->buffers.size())
+            throw std::runtime_error("Prepared vertex is missing fetch layout");
+        Append(data, u32(fetch->fetch->attributes.size()));
+        Append(data, fetch->fetch->vertex_offset_sgpr);
+        Append(data, fetch->fetch->instance_offset_sgpr);
+        AppendSpan(data, std::span(fetch->fetch->attributes));
+        AppendSpan(data, std::span(fetch->buffers));
+    }
     AppendSpan(data, spirv);
     TemplateLocation entry{.hash = info.pgm_hash,
                            .code_hash = code_hash,
@@ -178,6 +221,11 @@ TemplateLocation TemplateWriter::Write(u64 code_hash, u64 runtime_key, const Inf
                            .offset = u64(state->pack.tellp()),
                            .checksum = XXH3_64bits(data.data(), data.size()),
                            .bytes = u32(data.size())};
+    Backend::Bindings relative{};
+    info.AddBindings(relative);
+    if (relative.unified > 255 || relative.buffer > 255 || relative.user_data > 255)
+        throw std::runtime_error("Prepared binding counts exceed format");
+    entry.reserved = relative.unified | (relative.buffer << 8) | (relative.user_data << 16);
     state->pack.write(reinterpret_cast<const char*>(data.data()), data.size());
     if (!state->pack)
         throw std::runtime_error("Cannot write prepared template");
@@ -220,8 +268,24 @@ bool TemplatesReady(const fs::path& cache, const Profile& profile, u64 library, 
     entries = index->header.count;
     return true;
 }
+std::vector<Backend::Bindings> TemplateBindingVariants(const fs::path& cache, u64 hash,
+                                                       u64 code_hash, const Profile& profile) {
+    std::vector<Backend::Bindings> result;
+    const auto index = ReadIndex(cache, profile);
+    if (!index) return result;
+    const auto [first, last] = index->entries.equal_range(hash);
+    for (auto it = first; it != last; ++it) {
+        const auto& e = it->second;
+        if (e.code_hash != code_hash) continue;
+        Backend::Bindings b{e.reserved & 255, (e.reserved >> 8) & 255, (e.reserved >> 16) & 255};
+        if (std::ranges::find_if(result, [&](const auto& value) { return value == b; }) == result.end())
+            result.push_back(b);
+    }
+    return result;
+}
 bool TryTemplate(const fs::path& cache, u64 runtime_key, u64 code_hash, Info& info,
-                 const RuntimeInfo& runtime, const Profile& profile, std::vector<u32>& spirv) {
+                 const RuntimeInfo& runtime, const Profile& profile, std::vector<u32>& spirv,
+                 const Gcn::FetchShaderSnapshot* captured_fetch) {
     try {
         const auto index = ReadIndex(cache, profile);
         if (!index)
@@ -264,6 +328,18 @@ bool TryTemplate(const fs::path& cache, u64 runtime_key, u64 code_hash, Info& in
                 reader.Read(read.pointers.data(), count * 4);
                 plan.push_back(std::move(read));
             }
+            Gcn::FetchShaderSnapshot baseline_fetch{.info = &baseline};
+            if (header.info.has_fetch_shader) {
+                const u32 count = reader.Value<u32>();
+                if (count > 32) throw std::runtime_error("Prepared vertex has too many attributes");
+                baseline_fetch.fetch.emplace();
+                baseline_fetch.fetch->vertex_offset_sgpr = reader.Value<s8>();
+                baseline_fetch.fetch->instance_offset_sgpr = reader.Value<s8>();
+                baseline_fetch.fetch->attributes.resize(count);
+                baseline_fetch.buffers.resize(count);
+                reader.Read(baseline_fetch.fetch->attributes.data(), count * sizeof(Gcn::VertexAttribute));
+                reader.Read(baseline_fetch.buffers.data(), count * sizeof(AmdGpu::Buffer));
+            }
             std::vector<u32> compiled(header.spirv_words);
             reader.Read(compiled.data(), compiled.size() * 4);
             if (!reader.bytes.empty())
@@ -285,7 +361,14 @@ bool TryTemplate(const fs::path& cache, u64 runtime_key, u64 code_hash, Info& in
                     RegisterSrtReadPlan(plan, header.flat_words, runtime.props.num_user_data);
                 prepared.RefreshFlatBuf();
             }
-            if (!Compatible(baseline, prepared, runtime, profile))
+            Gcn::FetchShaderSnapshot explicit_fetch;
+            std::optional<Gcn::ScopedFetchShaderSnapshot> current_scope;
+            if (captured_fetch) {
+                explicit_fetch = *captured_fetch;
+                explicit_fetch.info = &prepared;
+                current_scope.emplace(explicit_fetch);
+            }
+            if (!Compatible(baseline, prepared, runtime, profile, baseline_fetch))
                 continue;
             std::vector<u32> resolved;
             if (!FreezeTemplate(

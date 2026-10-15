@@ -1,411 +1,182 @@
-# Offline shader experiment
+# Offline shader preparation
 
-This branch tests whether God of War III's original shader programs and their
-specializations can be recovered from installed assets before gameplay. The
-eventual target is an Xbox launcher action that builds a local cache for the
-whole game without requiring a prior playthrough.
+The UWP launcher offers **Start game** and **Precompile shaders**. Preparation
+scans the installed game and invokes the same native C++ shader compiler used by
+the renderer. It does not need a prior playthrough or recorded shader metadata.
+Python tools in this directory perform extraction and verification only.
 
-The extractor and headless compiler can freshly compile extracted fragment
-programs using recorded specialization data. A small resource-free fragment
-subset also compiles from asset headers without recorded specialization data.
-The UWP launcher now exposes **Start game** and **Precompile shaders**, with scan
-and compilation progress. The supported asset-only subset produces runtime-ready
-entries; textured and other unsupported shaders retain on-demand compilation.
-Complete whole-game coverage is not implemented yet.
+For the measured CUSA01715 WAD inventory, the native launcher prepares **all
+97,544 original shader identities**: 48,772 fragment and 48,772 vertex shaders.
+These share 27,944 distinct instruction sequences. This covers the archived
+program inventory, not every possible draw-state specialization. Incompatible
+runtime variants retain ordinary on-demand compilation.
 
-## Whole-library template experiment
-
-The headless compiler now compiles every extracted WAD shader identity from
-asset inputs: **48,772 fragments (27,207 distinct jobs)** and **48,772 vertices
-(740 distinct jobs)**, with zero compilation failures. This establishes asset
-translation coverage, not complete runtime variant coverage or launcher readiness.
-The deployed launcher still uses the 154-entry group described below.
-
-Templates defer per-sampler normalization/gamma flags, buffer strides, null-read
-results and vertex swizzles as SPIR-V specialization constants. Runtime resolution
-patches these already compiled constants; it does not translate guest instructions.
-Some descriptor shapes, vertex number classes and pipeline states still require
-separate compatible variants. The native self-test checks bounded input reads,
-fetch semantics, constant resolution and rejection of malformed templates.
-
-In a 315-identity fragment experiment, all 945 attachment variants compiled and
-the 267 available template/reference comparisons passed Vulkan 1.2 validation.
-After applying recorded descriptors only as a post-compilation test, 100 have
-byte-identical optimized SPIR-V. A structural check finds 217 equivalent outputs,
-ignoring declaration order and numeric IDs only; 50 still differ. One confirmed
-missing case uses a 3D lookup texture where the experimental variant supplies 2D.
-All 270 normal recorded-specialization regression checks still match exactly.
-Private evidence is in `whole-fragment-01`, `whole-vertex-01`,
-`template-validation-01/02/03` and `replay-regression-02`.
-
-`SPV_KHR_float_controls` is redundant at the emitted SPIR-V 1.5 version, but makes
-the upstream aggressive dead-code elimination pass decline the module. Comparison
-normalization removes only that redundant extension declaration, preserving the
-capabilities and execution modes, and validates the resulting core module before
-optimization.
-
-Batch packing and native compilation (research outputs only):
-
-```powershell
-python tools/offline_shaders/batch.py <assets.json> <material-plan.json> <objects-dir> --stage fragment --output <new-input-dir>
-xbox/.local/build/gpu/gow3-offline-shader.exe emit-batch bgra8-template <new-input-dir>/assets.gab <profile.bin> <new-output-dir>
-```
-
-For vertices, pack with `--stage vertex` and use `vertex-depth-template`.
-`vertex-depth-skin-template` selects the unsigned bone-index layout. GAB1 is
-bounded, versioned and streaming. The native process reuses compiler pools and
-writes one SPIR-V container plus an index, avoiding thousands of worker processes.
-The packer performs extraction/serialization only. It reads no gameplay metadata.
-Run `gow3-offline-shader selftest` for native checks. `freeze-template` accepts a
-recorded metadata file only to simulate live specialization in verification.
-
-## Native launcher preparation
-
-The expanded native preparation path now builds **48,772 fragment identities**
-in 146,316 attachment-variant checks. A fresh run produces 81,619 distinct compiled
-records and shares 64,697 aliases in a single 1.84 GiB library with a 6.7 MiB index.
-A second run reuses all 146,316 entries. The asset scanner, compilation, descriptor
-layout capture, cache writer and runtime resolver are native C++; no gameplay
-metadata is used during preparation. Vertex templates remain a headless batch
-experiment at this milestone.
-
-The library is `templates.gtp` plus `templates.gti` under the same app-local cache
-directory. A completed inventory/profile match reuses it; an interrupted write
-stays in `.tmp` files and is rebuilt. Live lookup checks identity, original code,
-runtime key, profile, bounds, checksum and static resource specialization. Only
-explicitly deferred fields may differ. Read-only null resources resolve to zero;
-unsupported descriptor shapes and writable-resource changes fall back normally.
-Asset-derived descriptor walkers are registered only for shaders actually used,
-deduplicate layouts, follow current guest pointers, and recover from null tables.
-
-The real lookup path hits **222 of 270 available fragment reference states**;
-all 222 resulting outputs validate and match the reference structurally after
-optimization. The remaining 48 are cache misses. This test does not use an allowlist
-of encountered hashes: preparation still covers the full extracted fragment
-inventory. All 27,207 distinct fragment and 740 vertex batch outputs independently
-passed the official Vulkan 1.2 validator. The optional standalone
-`validate_batch.cpp` tool links against SPIRV-Tools only for this verification.
-Private evidence: `native-templates-01`, `native-template-reuse-01`,
-`native-template-lookup-01`, `native-template-compare-01`, and the two whole-library
-batch `vulkan-validation.txt` reports.
-
-The Xbox deployment still has the earlier 154-entry implementation. The following
-description documents that earlier deployed milestone; the expanded implementation
-must pass desktop gameplay validation before replacing it on the console.
-
-The launcher invokes the C++ asset scanner and the renderer's C++ shader compiler
-directly. Python is used only for research and comparison tools. Preparation
-requires the installed dump and the current renderer profile, without recorded
-gameplay metadata. It seeks past large texture/model payloads, bounds material
-buffers, and reuses compiler memory between shaders.
-
-For CUSA01715 the current supported group contains **154 fragment shader
-identities, representing 40 distinct code sequences**. Three target variants
-(depth-only, RGBA8, BGRA8) produce 462 preparation checks. Two variants have
-identical specialization keys, so a fresh run writes 460 files and reuses two;
-a second run reuses all 462 checks. Unsupported groups include 48,618 fragment
-and 48,772 vertex identities. Resource-free shaders with inputs use vertex
-semantic linkage recovered from the same material.
-
-Prepared files live in `user/shader/precompiled/CUSA01715` inside app-local
-storage. Runtime synchronous and asynchronous compilation check these files
-before translating a shader. Original identity, code hash, shader runtime
-settings, target profile, file size, version and output checksum must match.
-Missing, incompatible or corrupt entries fall back to the usual compiler.
-Partial preparation can safely resume; existing valid entries are reused.
-
-This prepares PS4 shader translation to SPIR-V. Driver translation and graphics
-pipeline creation can still occur when a draw is first encountered.
-
-The native implementation can also be exercised without launching the game:
-
-```powershell
-tools/offline_shaders/build.ps1
-xbox/.local/build/gpu/gow3-offline-shader.exe prepare-native <dump> <profile.bin> <output-cache>
-xbox/.local/build/gpu/gow3-offline-shader.exe verify-precompiled <output-cache> <recorded.meta> <profile.bin> <original.gcn> <recorded.spv>
-```
-
-`verify-precompiled` uses recorded settings only to test runtime lookup, after
-asset-only preparation. It compares SPIR-V bytes and checks that changed code,
-sample count and incompatible profile are rejected. All seven available
-reference cases pass; a separate corrupt-file check confirms a cache miss.
-
-## Running the inventory
-
-Python 3.10 or newer; no additional packages, GPU, or running game required.
-
-```powershell
-python tools/offline_shaders/scan.py H:/dumps/CUSA01715-app0 `
-  --cache <existing-per-title-cache-directory> `
-  --dumps <existing-raw-shader-dump-directory> `
-  --extract --output xbox/.local/offline-shaders/new-run
-```
-
-`--cache`, `--dumps`, and `--extract` are optional. `--archive R_UI.WAD`
-selects an archive by basename and may be repeated. `--max-files N` explicitly
-limits a scan. The output directory must be new and must not overlap any input.
-Keep extracted game bytes and manifests in ignored `.local`, outside commits.
-
-The scanner walks all `EXEC/WAD/PS4_LE/**/*.WAD` files, including `ORIGINAL`.
-It understands the 64-byte WAD entry headers, 16-byte payload padding, and the
-level archives' payload-free `EntityCount` record. Inside each payload it checks
-the shader's `s_mov_b32 vcc_hi` token, metadata pointer, `OrbShdr` signature,
-length, and entry bounds. The pointer and length interpretation follows the
-renderer in `gpu/shadps4/video_core/amdgpu/regs_shader.h`.
-
-`report.json` records archive parsing results, original shader hashes, code
-SHA-256 digests, entry names, offsets, and runtime reference matches. With
-`--extract`, `objects/<sha256>.gcn` contains the original instruction bytes,
-excluding the usage table and footer. Identical bytes are stored once while all
-header identities and origins remain in the manifest. Checkpoints are written
-atomically; there is no resume support yet.
-
-The tool distinguishes three different comparisons:
-
-- A cached SPIR-V filename shares the shader's original header hash.
-- A runtime raw dump shares that hash **and** contains identical instruction bytes.
-- Instruction bytes match but the original header hash differs.
-
-The third case is useful evidence, but cannot substitute for matching runtime
-identity. SPIR-V files receive a basic header check, not full validation or a
-fresh compiler comparison. Parse findings produce exit code 2, with affected
-archives retained in the report. A completed scan is not proof of all pipelines.
-
-## Measured baseline, 15 October 2026
-
-The local CUSA01715 dump and existing desktop UWP references produced:
+## Current results, 15 October 2026
 
 | Measurement | Result |
 | --- | ---: |
 | WAD files parsed / parsing findings | 410 / 0 |
-| Shader occurrences | 136,006 |
-| Distinct original header hashes | 97,544 |
-| Distinct instruction byte sequences | 27,944 |
-| Cached original shader hashes found in assets | 540 / 549 |
-| Raw reference hashes matched by identity and bytes | 508 / 517 |
-| Raw reference hashes with identical code under any header | 510 / 517 |
+| Original shader identities prepared | 97,544 / 97,544 |
+| Distinct compiled template variants | 98,651 |
+| Aliases sharing those compiled records | 338,445 |
+| Total preparation checks | 437,096 |
+| Skipped identities / preparation failures | 0 / 0 |
+| Recorded states satisfied by prepared templates | 516 / 570 |
+| Prepared outputs validated and structurally equivalent to references | 516 / 516 |
+| Ordinary compiler regression outputs still byte-identical | 270 / 270 |
 
-These are inventory and provenance measurements, not a percentage of the whole
-game's shaders or pipelines. Seven recorded raw shader identities still have no
-matching instruction bytes in this WAD inventory. Their origins need checking;
-executables, modules, generated shaders, and alternate program layouts are not
-covered. The measured scan took approximately 226 seconds on the development PC.
-Private output is under `xbox/.local/offline-shaders/all-wads-02`.
+The reference lookup includes 222 fragment and 294 vertex hits. The remaining
+48 fragment and six vertex states safely fall back. Known examples require a
+3D image, another attachment configuration, or a different static buffer format.
+No encountered-hash allowlist controls asset preparation.
 
-## Fresh compilation comparison
+The desktop UWP smoke test reached combat with the ordinary shader cache
+disabled and recorded **467 synchronous prepared shader hits**. Sequential
+captures showed correctly rendered intros and combat. The test was stopped by
+a deadline watchdog and its temporary input/settings were cleared or restored.
+The signed Xbox package is `1.0.26288.1829`; console preparation verification
+is recorded in ignored local evidence rather than bundling PC-specific caches.
 
-With an existing configured UWP graphics build:
+The full library prepares on the target GPU profile. A repeat run reuses valid
+entries; the desktop launcher's actual preparation action also reused all
+97,544 identities. Private evidence is under `xbox/.local/offline-shaders`:
+`native-all-templates-02`, `native-all-lookup-02`, `native-all-compare-02`,
+`replay-regression-03`, and `desktop-all-smoke-02`.
+
+This prepares **PS4 GCN to SPIR-V translation**. Driver translation to DXIL and
+graphics pipeline creation can still happen on first use. Original shaders
+outside the scanned WAD format and unsupported live variants are not covered
+by the inventory total. Complete elimination of first-use stalls is not claimed.
+
+## How it scales
+
+The native scanner recovers register headers, resource usage slots, fetch
+semantics, and adjacent vertex/fragment linkage from materials. It seeks past
+large texture/model payloads and bounds material reads. Compiler pools are
+reused between jobs. Shared program/settings combinations compile once; aliases
+keep every original identity addressable without duplicating shader bytes.
+
+Fragment preparation enumerates depth-only, RGBA8 and BGRA8 attachment states.
+Vertex preparation obtains starting bindings from the paired fragment, covers
+both depth ranges, and enumerates float/signed/unsigned bone-index layouts where
+needed. The previously unresolved extra vertex semantic flag is accepted as a
+linear interpolation flag; unknown flags still fail closed.
+
+Templates defer sampler normalization/gamma, aligned buffer strides, read-only
+resource presence, vertex swizzles and read-only formatted-buffer component
+selection. Live lookup resolves those constants in already translated SPIR-V.
+Other descriptor/layout changes must match a prepared variant. Buffer address
+arithmetic preserves the ordinary compiler's integer operation order, including
+u32 overflow behavior; writes retain fixed component maps.
+
+Offline resource tables use bounded synthetic memory. Preparation records a
+table-read plan rather than executing guest-pointer walker code. Only actual
+runtime use registers a deduplicated walker following the current guest tables;
+null tables can recover on a later refresh. Prepared records retain no old guest
+pointers. The ordinary serialized metadata ABI remains unchanged.
+
+## Storage and runtime checks
+
+Prepared libraries live in `user/shader/precompiled/CUSA01715` within app-local
+storage. Each stage has `templates.gtp` plus `templates.gti`; vertex files are
+in the `vertex` subdirectory. Library format version 3 is independent of the
+ordinary gameplay shader cache.
+
+The measured PC library occupies approximately 2.7 GiB including indexes.
+Runtime reads individual shader records; it does not load the entire library
+into RAM. Entries check original identity/code, runtime settings, GPU profile,
+version, lengths, checksums and fixed specialization fields before reuse.
+Missing, incompatible or corrupt entries fall back to the ordinary compiler.
+
+Pack/index writes are staged in `.tmp` files. A completed inventory/profile
+match is reused; an interrupted preparation is rebuilt. Cache files depend on
+the GPU/compiler profile and should be prepared independently on Xbox. Keep
+extracted game bytes, generated caches, dumps and machine configuration in
+ignored `.local` directories, outside commits.
+
+## Native tools
+
+With the UWP graphics build configured:
 
 ```powershell
 pwsh -NoProfile -File tools/offline_shaders/build.ps1
-python tools/offline_shaders/compare.py xbox/.local/offline-shaders/all-wads-02/report.json `
-  --worker xbox/.local/build/gpu/gow3-offline-shader.exe `
-  --output xbox/.local/offline-shaders/new-comparison --limit 270
+xbox/.local/build/gpu/gow3-offline-shader.exe selftest
+xbox/.local/build/gpu/gow3-offline-shader.exe prepare-native <dump> <profile.bin> <output-cache>
 ```
 
-The explicit CMake target is excluded from normal app builds. It links the same
-shader compiler as UWP and replaces only its table-refresh pass in this separate
-executable: flat descriptor offsets are regenerated, but captured table bytes are
-used without following old guest pointers. Recorded walker pointers and machine
-code are discarded. Derived compiler Info is built afresh rather than copied.
-The tool creates no Vulkan device, launches no game, and never writes into the
-reference cache. Each comparison runs in a bounded subprocess and saves its fresh
-SPIR-V, log, and provenance in the new private output directory.
+`prepare-native` exercises the launcher's preparation code without launching a
+game or creating a Vulkan device. The profile must come from the target renderer.
 
-Measured result: **270 / 270 extracted fragment-shader cases produced byte-identical
-SPIR-V**, including texture/resource-table cases. The initial simple proof was
-`0x683cb941b24f0169`, from the `crepuscularRays` material in `R_FX.WAD`. The full
-comparison is in `.local/offline-shaders/compile-fragments-03` under `xbox`.
-Matching the renderer's `AmdGpu::no_msaa` setting was necessary: without that
-initialization, 85 cases emitted multisampled texture operations instead.
-The worker uses the UWP default (no MSAA); `GOW3_NO_MSAA=0` selects the other mode.
-
-This is a recorded-specialization replay proof, not whole-game precompilation.
-Native `.meta` version 7 and unsalted shader version 7 are required. Vertex fetch,
-other stages, and alternate native cache layouts are deliberately rejected.
-
-## Asset-derived register and stage-linkage plan
+For independent extraction and streaming experiments:
 
 ```powershell
-python tools/offline_shaders/assets.py xbox/.local/offline-shaders/all-wads-02/report.json `
-  --output xbox/.local/offline-shaders/new-asset-headers
-python tools/offline_shaders/plan.py xbox/.local/offline-shaders/all-wads-02/report.json `
-  xbox/.local/offline-shaders/new-asset-headers/assets.json `
-  --output xbox/.local/offline-shaders/new-material-plan.json
+python tools/offline_shaders/scan.py <dump> --extract --output <new-inventory>
+python tools/offline_shaders/assets.py <new-inventory>/report.json --output <new-headers>
+python tools/offline_shaders/plan.py <new-inventory>/report.json <new-headers>/assets.json --output <new-plan.json>
+python tools/offline_shaders/batch.py <new-headers>/assets.json <new-plan.json> <new-inventory>/objects --stage fragment --output <new-input>
+xbox/.local/build/gpu/gow3-offline-shader.exe emit-batch bgra8-template <new-input>/assets.gab <profile.bin> <new-output>
 ```
 
-`assets.py` reads each inventoried program's packed register header, usage-slot
-table, and vertex fetch/export or fragment-input semantic tables. It validates
-the relative code location and table sizes. The default output is one manifest;
-use `--hash <original-hash> --recipes` to generate a small selection of standalone
-recipe files for direct worker experiments. Original game bytes stay private.
+For vertices use `--stage vertex` and `vertex-depth-template`.
+`vertex-depth-skin-template` selects signed bone indices;
+`vertex-depth-uint-template` selects unsigned indices. GAB1 and GFP1/GVP1 recipe
+formats are bounded and versioned. The native worker writes a streaming SPIR-V
+container and index instead of launching thousands of compiler processes.
+`emit-asset TARGET RECIPE PROFILE GCN OUTPUT` handles a single independent case.
 
-`plan.py` pairs adjacent vertex/fragment programs within their actual source
-material entries and matches fragment input semantics to vertex exports. Hash
-prefix matching alone is insufficient: 68 material pairs have different vertex
-and fragment prefixes. Optional `--cases <worker-list.jsonl>` validates recovered
-settings against recorded cases; those cases do not build or change the plan.
+## Validation
 
-Measured asset results:
+Asset preparation never consumes gameplay `.meta` files. Only after preparation,
+`emit-precompiled CACHE META PROFILE GCN OUTPUT` applies recorded state to test
+the real runtime lookup. `freeze-template SPIRV META OUTPUT` tests specialization
+separately. `verify-precompiled` checks reuse and incompatible-code/state/profile
+rejection against a recorded reference. These are test oracles, not compiler
+inputs for the prepared asset library.
 
-- All **97,544 vertex/fragment register headers** recovered without format failures.
-- All **48,772 material shader pairs** linked without missing semantics.
-- Recovered common register settings agree with **570 recorded cases**.
-- Recovered fragment parameter indices agree with **270 recorded cases**.
-- Six materials have an additional semantic flag whose interpretation remains
-  unresolved; it is preserved explicitly in the plan.
+Prepared-hit outputs pass the official Vulkan 1.2 validator and are compared
+structurally after optimization. Numeric IDs, declaration ordering and unused
+globals may differ; executable operations, interfaces, capabilities and execution
+modes must agree. At emitted SPIR-V 1.5, `SPV_KHR_float_controls` is redundant but
+causes upstream aggressive dead-code elimination to decline the module. The
+comparison removes only that declaration and validates the core module before
+optimization. All 516 prepared hits agree by this method.
 
-These counts refer to original identities; many share identical instruction
-bytes. The private baseline manifests are `asset-headers-02/assets.json` and
-`material-plan-02.json` in `xbox/.local/offline-shaders`.
+The initial independent batch of 27,207 fragment and 740 vertex jobs separately
+passed official Vulkan 1.2 validation. This is distinct from the final 98,651
+native variants; it is not a claim that every final variant was independently
+validated with SPIRV-Tools. `validate_batch.cpp` is an optional standalone checker
+and adds no game dependency.
 
-## Compilation without recorded shader specializations
-
-The worker's `compile-asset TARGET PSH PROFILE GCN REFERENCE OUTPUT` mode builds
-fragment settings from the asset header and an explicit target variant. It reads
-no `.meta` file. `emit-asset TARGET PSH PROFILE GCN OUTPUT` also requires no
-reference SPIR-V. The target GPU's compiler profile is still required; the final
-Xbox launcher would obtain that from its renderer/device.
-
-The initial independent depth-only compile of `0x683cb941b24f0169` produced the
-same **2,252 SPIR-V bytes** as the recorded reference. The asset's color-export
-declaration alone does not identify the draw's active render targets: the
-reference used a depth-only pass. An explicit RGBA8 target produces a different
-variant, as expected.
-
-```powershell
-python tools/offline_shaders/emit.py xbox/.local/offline-shaders/all-wads-02/report.json `
-  xbox/.local/offline-shaders/asset-headers-02/assets.json `
-  --profile <target-GPU-profile.bin> `
-  --worker xbox/.local/build/gpu/gow3-offline-shader.exe `
-  --plan xbox/.local/offline-shaders/material-plan-02.json `
-  --target depth-only --target rgba8 --target bgra8 `
-  --output xbox/.local/offline-shaders/new-independent-batch
-```
-
-Measured independent batch: **79 asset shader identities, five distinct code
-sequences, two explicit target variants: 158 fresh compilations, zero failures**.
-That initial path supported only fragment headers without usage slots/input
-semantics. The extended path accepts recovered input linkage from `--plan` and
-still rejects shaders that discover resources or user-data specialization. It is
-a deliberately small supported subset, not a whole-game cache. Fresh outputs
-beyond the byte-matched proof have not been exercised in gameplay.
-
-## Validation method: the cache is a test set
-
-The general asset compiler must obtain its shader-specific inputs from game
-assets and explicit target variants. Existing gameplay `.meta` files must not
-supply those inputs in this experiment. After compilation has finished, compare
-the generated SPIR-V with recorded outputs for the known subset:
-
-```powershell
-python tools/offline_shaders/check_outputs.py `
-  xbox/.local/offline-shaders/new-independent-batch/emission.json `
-  --reference <existing-per-title-cache-directory> `
-  --output xbox/.local/offline-shaders/new-independent-comparison.json
-```
-
-The comparison tool cannot invoke the compiler and does not read `.meta` files.
-Its profile check ensures both sets target the same GPU compiler profile. This
-separation lets known examples validate a general method before applying it to
-unseen assets. Additional playthroughs are not a prerequisite for expanding it.
-The full asset census reports unsupported requirements independently of cache
-membership. Representative exact matches support extending the method to other
-shaders with the same requirements; they do not guarantee every pipeline variant.
-
-The extended resource-free group has 154 identities (79 without linkage, 75 with
-linkage). The first blind run compiled them all, then matched four of seven
-available references. The other three differed only in red/blue output channel
-ordering, exposing the missing standard BGRA attachment variant. The corrected
-batch includes depth-only, RGBA8, and BGRA8 targets. It still uses no recorded
-shader specialization inputs.
-
-Corrected result: **462 fresh outputs across 154 identities and three target
-variants; all seven available reference cases match byte-for-byte**. The other
-147 identities were absent from the reference cache and compiled through the
-same asset-only method. This validates extension of the supported group without
-requiring a gameplay recording for each member. Private results are
-`blind-linkage-02/emission.json` and `blind-linkage-02-validation.json` under
-`xbox/.local/offline-shaders`. The full census separately reports 48,618 fragment
-identities needing resource descriptors and 48,772 vertex identities needing
-input-format support.
-
-## Remaining work
-
-### Resource and vertex experiments after the launcher milestone
-
-The native compiler now also accepts explicit float-2D resource variants from
-the asset's usage slots. `AssetInputs` supplies immediate descriptors, extended
-user data, resource tables and sampler tables in a bounded synthetic address
-space. The compiler records the table read plan instead of generating or
-executing a guest-pointer walker for offline input. Unsupported dynamic offsets
-and out-of-bounds reads are rejected.
-
-The resource experiment selected 267 known fragment identities plus 48 unseen
-resource-layout cases. All 315 compiled for twelve explicit attachment/sampler
-variants (3,780 outputs, zero failures). After compilation, 89 of the 267
-available references matched byte-for-byte. The rest expose per-texture sampler
-state and other variants that a uniform sampler setting cannot represent. The
-first independently prepared textured `bloom` shader matches all 5,108 reference
-bytes. No recorded specialization inputs are used by this path.
-
-GVP1 vertex recipes recover fetch attributes from the asset's input semantics,
-including the buffer-table SGPR and semantic descriptor offsets. Version 2 also
-carries starting binding counts obtained by compiling the paired fragment
-shader. The first `bloom` vertex proof matches all 6,508 reference bytes with
-asset-derived inputs and a common float mesh layout. It does not establish
-coverage of all vertex layouts. Native records remain comparison data only.
-
-The original 270 recorded-specialization replay checks still pass exactly.
-These experiments are not enabled in the launcher's prepared cache yet; the
-launcher remains on the validated 154-entry subset until resource and layout
-matching are implemented. Private results are `resource-blind-02-validation.json`,
-`resource-probe-01`, `vertex-probe-01` and `replay-regression-01`.
-
-Fragment recipes may be tried with `--resources`, `--hash` and `--limit` in
-`emit.py`. Native targets `rgba8-sampler1/2/3` (also depth-only/BGRA8) select the
-two sampler flag bits explicitly; the unsuffixed target uses neither. GVP1
-recipes use `vertex` or `vertex-depth`, the latter applying the target's depth
-range conversion. These are research variants, not a universal material plan.
-
-Extend independent compilation to textured materials and vertex shaders by
-reconstructing their mesh buffer formats, texture/sampler descriptors, and
-binding layout. Resolve the remaining semantic flags and enumerate actual pass
-attachment/blend/depth variants before expanding runtime-importable coverage.
-Repeating a stored
-SPIR-V file or replaying only previously collected pipelines would not meet the
-whole-game goal.
-
-The compiler needs more than original instruction bytes: shader stages, runtime
-register settings, vertex fetch layout, resource formats/descriptors, starting
-bindings, and the target GPU profile. Graphics pipeline creation additionally
-needs stage combinations and render state. Assets must supply these or permit a
-bounded, validated enumeration of variants.
-
-The existing `.meta` files provide useful specialization references but are
-native-layout structures and include resource-table walker machine code.
-`Info::RefreshFlatBuf` can follow guest pointers. The worker supplies captured
-descriptors without following old process addresses for replay, but the general
-asset-derived descriptor/fetch-data provider still needs implementing.
-Research outputs stay outside active runtime caches; the launcher writes only
-the supported, validated subset to its separate versioned cache.
-
-Useful prior art: [KytyPS5 Shaders Lab](https://github.com/Almo7aya/KytyPS5-Shaders-Lab)
-for offline extraction/compiler experiments,
-[SCSKiller architecture](https://github.com/BlueHeisenberg/SCSKiller/blob/main/ARCHITECTURE.md)
-for asset-driven pipeline planning, and
-[Fossilize](https://github.com/ValveSoftware/Fossilize/blob/master/README.md)
-for capturing and replaying explicit Vulkan creation state. None supplies this
-game's complete PS4-to-Dozen asset/state reconstruction.
-
-## Checks
+The ordinary recorded-specialization regression remains byte-identical across
+270 cases. Native self-tests cover bounded descriptor reads, fetch mapping,
+constant resolution, cache profile/code/state rejection, aliases, presence
+constants, malformed records and corruption, and live table-walker null recovery.
+Python extraction/recipe checks use synthetic fixtures only:
 
 ```powershell
 python -m unittest discover -s tools/offline_shaders -p 'test_*.py' -v
 ```
 
-The synthetic fixtures cover unaligned programs, metadata bounds, duplicate
-code/header aliases, truncated archives, count records, reference validation,
-the distinction between identity and byte equality, packed vertex/fragment
-tables, semantic mapping, and pairing from source order. No game bytes or
-machine-specific configuration are included in the tests.
+Desktop game tests must run only one instance, arm a deadline before activation,
+and close the app and clear scripted controls on every exit. Console tests must
+also close after the requested evidence is collected.
+
+## Inventory provenance and earlier proofs
+
+The initial inventory found 136,006 occurrences, 97,544 original header hashes
+and 27,944 distinct instruction sequences. All 48,772 material shader pairs
+linked with recovered register settings agreeing with 570 recorded cases.
+Seven of 517 raw recorded identities have no matching instruction bytes in this
+WAD inventory; generated programs and executable/module layouts are not scanned.
+
+The first independent resource-free group contained 154 identities and matched
+all seven available references across depth/RGBA/BGRA variants. That earlier
+launcher limit has been replaced by the combined template implementation above.
+The textured `bloom` fragment and vertex proofs established byte-identical
+asset-derived compilation before expanding to the full library. Python was never
+used to generate compiled shaders.
+
+Prior-art research references include [KytyPS5 Shaders Lab](https://github.com/Almo7aya/KytyPS5-Shaders-Lab),
+[SCSKiller architecture](https://github.com/BlueHeisenberg/SCSKiller/blob/main/ARCHITECTURE.md),
+and [Fossilize](https://github.com/ValveSoftware/Fossilize/blob/master/README.md).
+They do not supply this game's complete asset/state reconstruction.

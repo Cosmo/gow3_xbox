@@ -495,7 +495,7 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
     AsyncJob<bool> capture_job;
     if (!capture_job.Start(*capture_compiler, [this, build, binding] {
         PhaseTimer capture{g_gow3_capture_ns};
-        if (!Gow3Precompile::TryLoad(build->info,build->runtime,build->code,profile,build->binary)) {
+        if (!Gow3Precompile::TryLoad(build->info,build->runtime,build->code,profile,build->binary,binding)) {
             auto [pools, reused] = compiler_pools.Acquire();
             build->pools = std::move(pools);
             if (reused) ++g_gow3_pool_reuses;
@@ -1153,7 +1153,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     CompileTimer timer;
 
     std::vector<u32> spv;
-    if (Gow3Precompile::TryLoad(info, runtime_info, code, profile, spv)) {
+    if (Gow3Precompile::TryLoad(info, runtime_info, code, profile, spv, binding)) {
         std::printf("Precompiled asset shader hit: %016llx (%zu words)\n", info.pgm_hash, spv.size());
         info.AddBindings(binding);
     } else {

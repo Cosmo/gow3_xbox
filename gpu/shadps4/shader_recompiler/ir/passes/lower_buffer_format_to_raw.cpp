@@ -16,6 +16,7 @@ struct FormatInfo {
     AmdGpu::CompMapping swizzle;
     AmdGpu::NumberConversion num_conversion;
     u32 num_components;
+    u32 offline_swizzle = std::numeric_limits<u32>::max();
 };
 
 static bool IsBufferFormatLoad(const IR::Inst& inst) {
@@ -101,6 +102,19 @@ static IR::Value LoadBufferFormat(IR::IREmitter& ir, const IR::Value handle, con
         } else {
             components.push_back(ir.Imm32(0.f));
         }
+    }
+    if (format_info.offline_swizzle != std::numeric_limits<u32>::max()) {
+        const std::array<u32, 4> defaults{u32(format_info.swizzle.r), u32(format_info.swizzle.g),
+                                        u32(format_info.swizzle.b), u32(format_info.swizzle.a)};
+        std::array<IR::Value, 4> selected;
+        for (u32 component = 0; component < 4; ++component) {
+            const auto selector = ir.OfflineConstant(defaults[component], format_info.offline_swizzle + component);
+            IR::Value value = ir.Select(ir.IEqual(selector, ir.Imm32(1u)), ir.Imm32(1.f), ir.Imm32(0.f));
+            for (u32 source = 0; source < 4; ++source)
+                value = ir.Select(ir.IEqual(selector, ir.Imm32(4u + source)), components[source], value);
+            selected[component] = value;
+        }
+        return ir.CompositeConstruct(selected[0], selected[1], selected[2], selected[3]);
     }
     const auto swizzled = ApplySwizzle(ir, ir.CompositeConstruct(components), format_info.swizzle);
     return swizzled;
@@ -210,6 +224,10 @@ static void LowerBufferFormatInst(IR::Block& block, IR::Inst& inst, Info& info) 
                                                                       flags.inst_data_fmt.Value())
                                         : buffer.GetNumberConversion(),
         .num_components = AmdGpu::NumComponents(data_format),
+        .offline_swizzle = info.offline_memory && info.offline_memory->Parametric() &&
+                                  !is_inst_typed && IsBufferFormatLoad(inst)
+                              ? OfflineSlot::Swizzle + 32 * 4 + inst.Arg(0).U32() * 4
+                              : std::numeric_limits<u32>::max(),
     };
 
     if (data_format == AmdGpu::DataFormat::FormatInvalid) {

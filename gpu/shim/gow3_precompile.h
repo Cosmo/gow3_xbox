@@ -7,10 +7,11 @@
 #include <span>
 #include <string>
 #include <vector>
+namespace Shader::Gcn { struct FetchShaderSnapshot; }
 
 namespace Gow3Precompile {
 struct Progress {
-    bool scanning = true;
+    bool scanning = true, vertex = false;
     u32 done = 0, total = 0, supported = 0, skipped = 0, failed = 0;
 };
 struct Summary {
@@ -22,8 +23,11 @@ std::filesystem::path CacheDirectory();
 Summary Prepare(const std::filesystem::path& dump, const std::filesystem::path& cache,
                 const Shader::Profile& profile, const Update& update);
 bool TryLoad(Shader::Info& info, const Shader::RuntimeInfo& runtime, std::span<const u32> code,
-             const Shader::Profile& profile, std::vector<u32>& spirv);
+             const Shader::Profile& profile, std::vector<u32>& spirv,
+             Shader::Backend::Bindings start = {});
 bool TryLoadAt(const std::filesystem::path& cache, Shader::Info& info,
                const Shader::RuntimeInfo& runtime, std::span<const u32> code,
-               const Shader::Profile& profile, std::vector<u32>& spirv);
+               const Shader::Profile& profile, std::vector<u32>& spirv,
+               Shader::Backend::Bindings start = {},
+               const Shader::Gcn::FetchShaderSnapshot* captured_fetch = nullptr);
 } // namespace Gow3Precompile
