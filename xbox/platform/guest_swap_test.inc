@@ -1,4 +1,5 @@
 typedef struct { uintptr_t address; int stop,error; } UwpSwapReader;
+extern int runtime_file_paged_selftest(void *buffer,uint64_t size);
 static uint64_t uwp_swap_test_word(uint64_t index) { return index^UINT64_C(0x6d2a8c1e4790b3f5); }
 static void *uwp_swap_test_reader(void *opaque) {
     UwpSwapReader *reader=opaque;
@@ -12,7 +13,7 @@ static void *uwp_swap_test_reader(void *opaque) {
 static int uwp_swap_selftest(void) {
     const uint64_t mapped_size=UINT64_C(256)<<20,touched_size=UINT64_C(64)<<20;
     int64_t physical=0; void *mapping=NULL,*alias=NULL;
-    if(direct_allocate(0,(int64_t)POOL_SIZE,mapped_size,PAGE,3,&physical) ||
+    if(direct_allocate(INT64_C(3)<<30,(int64_t)POOL_SIZE,mapped_size,PAGE,3,&physical) ||
        direct_map(&mapping,mapped_size,0x33,0,physical,PAGE)) return 60;
     volatile uint64_t *data=mapping;
     for(uint64_t i=0;i<touched_size/8;++i) data[i]=uwp_swap_test_word(i);
@@ -32,6 +33,16 @@ static int uwp_swap_selftest(void) {
     printf("UWP swap release probe: out=%" PRIu64 " MiB, app before=%" PRIu64 " after=%" PRIu64 " MiB\n",out>>20,before>>20,after>>20);
     if(host_protect((uintptr_t)mapping+2*PAGE+8192,4096,PROT_READ|PROT_WRITE)) return 64;
     for(uint64_t i=0;i<touched_size/8;++i) if(data[i]!=uwp_swap_test_word(i)) return 65;
+    if(runtime_file_paged_selftest((unsigned char *)mapping+(UINT64_C(16)<<20),UINT64_C(16)<<20)) return 83;
+    for(uint64_t i=(UINT64_C(16)<<20)/8;i<(UINT64_C(32)<<20)/8;++i)
+        if(data[i]!=uwp_swap_test_word(i)) return 84;
+    /* Late guest-code pins must leave the shared cache, even when their total
+     * exceeds its capacity. Otherwise a later scene could exhaust every slot. */
+    for(uint64_t n=UINT64_C(16)<<20;n<(UINT64_C(32)<<20);n+=PAGE) {
+        uintptr_t address=(uintptr_t)mapping+n;
+        if(!runtime_memory_handle_commit_fault_at(address,0,1) || uwp_page(address)->kind!=2 ||
+           uwp_physical[(physical+n)/PAGE].frame || *(volatile uint64_t *)address!=uwp_swap_test_word(n/8)) return 85;
+    }
     if(uwp_swap_views>uwp_swap_view_limit || !uwp_swap_hash_checks || uwp_swap_hash_errors) return 66;
     UwpSwapReader reader={.address=(uintptr_t)mapping+4*PAGE};
     pthread_t thread;
@@ -62,10 +73,12 @@ static int uwp_swap_selftest(void) {
     if(*(volatile uint64_t *)((uintptr_t)mapping+PAGE+8192)!=replacement ||
        *(volatile uint64_t *)((uintptr_t)mapping+4*PAGE)!=replacement) return 80;
     if(direct_release((uint64_t)physical,mapped_size)) return 81;
-    if(uwp_swap_views || uwp_swap_disk_pages) return 82;
+    if(uwp_swap_views || uwp_swap_disk_pages || uwp_swap_frame_count) return 82;
     uwp_swap_view_limit=old_limit;
     puts("PASS: disk eviction releases private commit and restores all 64 MiB byte patterns");
     puts("PASS: bounded mapped window, checksummed page-in, concurrent readers during eviction");
+    puts("PASS: guest file I/O spans a paged range larger than the resident window");
+    puts("PASS: late guest-code pins exceed the shared cache without occupying its slots");
     puts("PASS: guest-code pins, GPU no-access protections, protected writes, remaps and aliases survive swap");
     return 0;
 }

@@ -1,7 +1,7 @@
 /* UWP host mappings. Physical pages are backed only when touched. Single mappings
  * use private memory; a live physical alias promotes that page to a small section.
  * Unmapped direct-page contents survive in a bounded-to-touched-pages snapshot. */
-typedef struct { uintptr_t owner; unsigned char *saved; HANDLE section; unsigned references; uint64_t hash; unsigned char pinned,disk,hash_valid; } UwpPhysical;
+typedef struct { uintptr_t owner; unsigned char *saved; HANDLE section; unsigned references,frame; uint64_t hash; unsigned char pinned,disk,hash_valid; } UwpPhysical;
 typedef struct { uintptr_t address; uint64_t physical; int mapped, kind, pageable, split, committed; unsigned view_mask; int protection[4]; } UwpPage;
 static UwpPhysical *uwp_physical;
 static UwpPage *uwp_pages;
@@ -9,6 +9,8 @@ static size_t uwp_count,uwp_capacity;
 static SRWLOCK uwp_commit_lock=SRWLOCK_INIT;
 static uint64_t uwp_faults,uwp_aliases,uwp_snapshots,uwp_moves;
 static void uwp_fail(const char *what,uintptr_t address);
+static UwpPage *uwp_page(uintptr_t address);
+static int uwp_promote(UwpPhysical *physical,uint64_t offset);
 static DWORD win_prot(int prot) {
     if(prot&PROT_EXEC) return PAGE_EXECUTE_READ;
     if(prot&PROT_WRITE) return PAGE_READWRITE;
@@ -21,7 +23,8 @@ static void uwp_apply_protection(UwpPage *page) {
     }
 }
 static void uwp_fail(const char *what,uintptr_t address) {
-    fprintf(stderr,"STOP: UWP %s at %p, error %lu\n",what,(void *)address,GetLastError()); exit(21);
+    fprintf(stderr,"STOP: UWP %s at %p, error %lu\n",what,(void *)address,GetLastError());
+    fflush(stderr); TerminateProcess(GetCurrentProcess(),21); abort();
 }
 #include "guest_swap.inc"
 static size_t uwp_index(uintptr_t address) {
@@ -97,7 +100,11 @@ int runtime_memory_handle_commit_fault_at(uintptr_t address,int access,int guest
         int wanted=page->protection[index];
         int permitted=access==1 ? (wanted&PROT_WRITE) : access==8 ? (wanted&PROT_EXEC) : (wanted&(PROT_READ|PROT_WRITE|PROT_EXEC));
         if(permitted) {
-            handled=uwp_commit(page);
+            if(guest_code && (page->kind==3||page->kind==4)) {
+                if(uwp_promote(&uwp_physical[page->physical/PAGE],page->physical))
+                    uwp_fail("pinned page promotion",page->address);
+                handled=1;
+            } else handled=uwp_commit(page);
             if(!handled && (wanted&(PROT_EXEC|PROT_WRITE))==(PROT_EXEC|PROT_WRITE)) {
                 MEMORY_BASIC_INFORMATION info; DWORD old;
                 uintptr_t subpage=address&~(uintptr_t)4095;
@@ -134,7 +141,7 @@ static int uwp_detach(UwpPage *page,int preserve) {
             free(physical->saved); physical->saved=saved; ++uwp_snapshots;
         }
         if(!VirtualFree((void *)page->address,PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) uwp_fail("private page release",page->address);
-    } else if(page->kind==3) {
+    } else if(page->kind==3||page->kind==4) {
         physical->hash_valid=0;
         uwp_swap_unmap_view(page);
     } else if(page->kind==2) {
@@ -153,25 +160,34 @@ static int uwp_promote(UwpPhysical *physical,uint64_t offset) {
     if(physical->section) return 0;
     HANDLE section=CreateFileMappingFromApp(INVALID_HANDLE_VALUE,NULL,PAGE_READWRITE|SEC_COMMIT,PAGE,NULL);
     if(!section) { fprintf(stderr,"UWP memory: physical alias section failed, error %lu\n",GetLastError()); return -1; }
+    void *alias=MapViewOfFile3FromApp(section,GetCurrentProcess(),NULL,0,PAGE,0,PAGE_READWRITE,NULL,0);
+    if(!alias) { CloseHandle(section); return -1; }
     UwpPage *owner=uwp_page(physical->owner);
-    unsigned char data[16384]={0}; DWORD old;
+    DWORD old;
     if(owner) {
         if(owner->kind==3||owner->kind==4) {
-            memcpy(data,uwp_swap_bytes(owner->physical),PAGE);
-            if(owner->kind==3) uwp_swap_unmap_view(owner);
+            uwp_swap_unmap_view(owner);
+            if(!uwp_swap_transfer(owner->physical,alias,0)) uwp_fail("promoted page read",owner->address);
+            if(physical->hash_valid) {
+                ++uwp_swap_hash_checks;
+                if(uwp_swap_hash(alias)!=physical->hash) {
+                    ++uwp_swap_hash_errors;
+                    uwp_fail("promoted page integrity",owner->address);
+                }
+            }
         } else {
             uwp_commit(owner);
             if(!VirtualProtectFromApp((void *)owner->address,PAGE,PAGE_READONLY,&old)) uwp_fail("alias promotion read",owner->address);
-            memcpy(data,(void *)owner->address,PAGE);
+            memcpy(alias,(void *)owner->address,PAGE);
             if(!VirtualFree((void *)owner->address,PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) uwp_fail("alias promotion release",owner->address);
         }
         uwp_swap_coalesce(owner);
         if(!MapViewOfFile3FromApp(section,GetCurrentProcess(),(void *)owner->address,0,PAGE,MEM_REPLACE_PLACEHOLDER,PAGE_READWRITE,NULL,0)) uwp_fail("canonical alias map",owner->address);
-        memcpy((void *)owner->address,data,PAGE);
         uwp_apply_protection(owner);
         owner->kind=2;
         owner->committed=0;
     }
+    UnmapViewOfFile(alias);
     physical->section=section;
     if(physical->disk) { physical->disk=0; --uwp_swap_disk_pages; }
     physical->hash_valid=0;
@@ -250,8 +266,7 @@ static int uwp_backing_write(uintptr_t address,const void *source,uint64_t size)
         uint64_t offset=address-page->address,n=PAGE-offset; if(n>size) n=size;
         UwpPhysical *physical=&uwp_physical[page->physical/PAGE];
         if(physical->disk && !physical->section) {
-            memcpy(uwp_swap_bytes(page->physical)+offset,source,n);
-            physical->hash_valid=0;
+            if(!uwp_swap_write_backing(page->physical,offset,source,n)) { result=0; break; }
         } else if(physical->section) {
             void *view=MapViewOfFile3FromApp(physical->section,GetCurrentProcess(),NULL,0,PAGE,0,PAGE_READWRITE,NULL,0);
             if(!view) { result=0; break; }

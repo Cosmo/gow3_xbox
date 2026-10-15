@@ -173,15 +173,15 @@ The packaged memory self-test measures app accounting around a 64 MiB guest-memo
 allocation. On desktop UWP it reported 351 MiB before, 447 MiB after touching it and
 383 MiB after releasing it: the release returned 64 MiB, and `VirtualQuery` confirmed
 that those guest pages were no longer committed. This verifies the guest release path;
-it does not establish a working console swap system.
+the later disk-paging implementation and its separate tests are described below.
 
 Kyty's current Xbox code uses a cold-page pager (`src/xbox/lazyRegions.h`,
 `pagerStore.h` and `src/kernel/memoryAddressSpace.inc`), rather than relying only on
 the sparse-file approach described in older research notes. It uses 64 KiB windows,
 atomic page restoration, host-I/O pinning, a dynamic guest budget, 768 MiB planning
-headroom and a 384 MiB emergency margin. GoW's UWP backend does not yet implement
-that pager. Any adaptation must preserve physical aliases, GPU page protections
-and host-I/O pin lifetimes, and be validated under an enforced desktop memory cap.
+headroom and a 384 MiB emergency margin. GoW's disk pager below adapts the archived
+Kyty implementation while retaining GoW's physical aliases and GPU page protections.
+Its lowered desktop test budget changes reclamation policy, not OS enforcement.
 
 The host handles UWP `BackRequested`, matching Kyty's game page, so Xbox B can
 remain the guest Circle button without invoking system back navigation. Physical
@@ -344,21 +344,27 @@ level fits in memory.
 `1303170`: a cached temporary LocalState file, memory-pressure headroom, pins for
 guest-code accesses, and retention of GPU page protections. The reference source
 was read from the archived Kyty repository; neither Kyty nor XboxResearch was
-modified. The GoW pager uses file-backed views for page-in, avoiding a copy into
-private memory that another reader could observe before restoration is complete.
+modified. Disk transfers use cached `ReadFile`/`WriteFile` calls at 64-bit offsets.
+Page-in fills a small shared frame through a host alias before publishing guest
+views, so concurrent readers cannot observe partially restored bytes.
 
 Paging is enabled by default in gameplay. `LocalState/gow3-swap.bin` is a single
 sparse temporary file, removed by Windows when the process closes. Its logical
-length covers the direct-memory pool; only saved content requires disk storage.
-The mapped working window is at most 64 MiB, plus one 64 KiB transfer view. File
-views use the individual 4 KiB GPU protections; no-access subpages remain absent
+length grows to the highest saved physical offset; only saved content requires
+disk storage. The shared frame cache is at most 64 MiB, committed as used and
+reused until process exit. Guest views use the individual 4 KiB GPU protections;
+no-access subpages remain absent
 until tracking permits access. Protected GPU readbacks update the file backing
 without temporarily opening those guest pages. Remaps, physical reuse, and live
-alias promotion preserve the memory contract.
+alias promotion preserve the memory contract. Guest file I/O uses a bounded
+1 MiB host buffer: the kernel never accesses guest pages that the pager could
+remove during a read or write.
 
 Only large GPU-type direct mappings (type 3, at least 256 MiB) are candidates.
 CPU heap mappings, stacks, live aliases, executable pages, and physical pages
-touched by guest-code faults stay pinned. As in Kyty, repeated user-mode faults
+touched by guest-code faults stay pinned. Late pins leave the shared cache for
+their own resident section, preventing pinned pages from exhausting cache slots.
+As in Kyty, repeated user-mode faults
 in guest code can damage its System V red zone, so these pins are deliberate.
 This is not an unlimited-memory guarantee: pinned guest memory and live GPU
 resources still have to fit in the app budget. Later gameplay remains to be
@@ -366,7 +372,7 @@ validated.
 
 The worker starts within 384 MiB of the app limit and attempts to recover 512 MiB
 of headroom. It reclaims private pages, keeping a tracked residency bit instead
-of repeatedly querying untouched pages. Already file-backed pages remain in the
+of repeatedly querying untouched pages. Already restored shared frames remain in the
 bounded window until its own capacity needs room. Failed private commits can
 reclaim memory synchronously; failed GPU image allocations can reclaim up to
 four 64 MiB batches and retry before reporting failure. Logs report page-out,
@@ -378,13 +384,16 @@ policies, not the OS enforcement or the overlay's actual OS limit. Delete the
 file or write `0` after testing. Private `graphics-debug.txt` accepts
 `GOW3_UWP_SWAP=0` to disable paging for a comparison.
 
-`pc-smoke.ps1 -Mode memory` now checks all 64 MiB of a patterned allocation with
-an 8 MiB mapped window, concurrent readers during eviction, guest-code pins,
-mixed GPU protections, protected host writes, remaps, and physical aliases.
-The contract passes on desktop UWP and Series X: 48 MiB of private app RAM is
-released by the probe, 3072 initial page-in checksum checks pass, and no
-corruption is observed. The initial 4 GiB gameplay stress run exposed excessive
-background scanning and view churn; those were removed before the final run.
+`pc-smoke.ps1 -Mode memory` checks all 64 MiB of a patterned allocation at physical
+offset 3 GiB with an 8 MiB shared cache, concurrent readers during eviction,
+guest-code pins, mixed GPU protections, protected host writes, remaps, and physical
+aliases. File I/O and late pins each span 16 MiB, exceeding the cache capacity.
+The high-offset test catches an Xbox failure in the first implementation, where
+mapping the disk file at a large offset returned error 8; disk file views have
+been replaced with explicit transfers. The contract passes on desktop UWP and
+Series X: the probe releases 48 MiB of private app RAM and performs 8,242 checksum
+checks without corruption. The initial 4 GiB gameplay stress
+run also exposed excessive background scanning and view churn, which were removed.
 
 Both input helpers now alternate A (Cross) and X (Square), with a 200 ms hold
 and a half-second target between presses. `xbox-autostart.ps1 -App <full-package>

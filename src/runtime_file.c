@@ -294,11 +294,58 @@ static void touch_for_write(void *buffer,uint64_t size) {
         *b=*b;
     }
 }
+#ifdef GOW3_UWP
+/* The kernel does not fault our pages back in. Copies through a bounded host
+ * buffer do, and cannot race a pager unmapping a buffer during kernel I/O. */
+static ssize_t paged_io(int handle,void *buffer,uint64_t size,int64_t offset,int positioned,int writing) {
+    if(size>0x7ffff000) size=0x7ffff000;
+    size_t capacity=(size_t)(size>(UINT64_C(1)<<20) ? (UINT64_C(1)<<20) : size);
+    if(!capacity) return 0;
+    unsigned char *bounce=malloc(capacity);
+    if(!bounce) { errno=ENOMEM; return -1; }
+    uint64_t total=0;
+    int error=0;
+    while(total<size) {
+        size_t count=(size_t)(size-total<capacity ? size-total : capacity);
+        if(writing) memcpy(bounce,(const unsigned char *)buffer+total,count);
+        ssize_t n=writing ? (positioned ? pwrite(handle,bounce,count,offset+(int64_t)total) : host_write(handle,bounce,count))
+                          : (positioned ? pread(handle,bounce,count,offset+(int64_t)total) : host_read(handle,bounce,count));
+        if(n<0) { error=errno; break; }
+        if(!n) break;
+        if(!writing) memcpy((unsigned char *)buffer+total,bounce,(size_t)n);
+        total+=(uint64_t)n;
+        if((size_t)n<count) break;
+    }
+    free(bounce);
+    if(!total&&error) { errno=error; return -1; }
+    return (ssize_t)total;
+}
+int runtime_file_paged_selftest(void *buffer,uint64_t size) {
+    const char *root=getenv("GOW3_GPU_USER_DIR");
+    if(!root) return 1;
+    char path[4096];
+    snprintf(path,sizeof(path),"%s/gow3-pager-io-selftest.bin",root);
+    FILE *file=fopen(path,"w+b");
+    if(!file) return 2;
+    int fd=fileno(file),result=0;
+    if(paged_io(fd,buffer,size,0,1,1)!=(ssize_t)size) result=3;
+    if(!result) {
+        memset(buffer,0,(size_t)size);
+        if(paged_io(fd,buffer,size,0,1,0)!=(ssize_t)size) result=4;
+    }
+    fclose(file); remove(path);
+    return result;
+}
+#endif
 static int64_t do_read(int fd,void *buffer,uint64_t size) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
-    touch_for_write(buffer,size);
-    ssize_t n=host_read(h,buffer,size);
+    ssize_t n;
+#ifdef GOW3_UWP
+    if(runtime_memory_is_mapped((uintptr_t)buffer,size)) n=paged_io(h,buffer,size,0,0,0);
+    else
+#endif
+    { touch_for_write(buffer,size); n=host_read(h,buffer,size); }
     if (n<0) { if (audio_trace()) printf("Audio trace: read(fd %d, %llu) failed, errno %d\n",fd,(unsigned long long)size,errno); return -errno; }
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
     return n;
@@ -306,8 +353,12 @@ static int64_t do_read(int fd,void *buffer,uint64_t size) {
 static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
-    touch_for_write(buffer,size);
-    ssize_t n=pread(h,buffer,size,offset);
+    ssize_t n;
+#ifdef GOW3_UWP
+    if(runtime_memory_is_mapped((uintptr_t)buffer,size)) n=paged_io(h,buffer,size,offset,1,0);
+    else
+#endif
+    { touch_for_write(buffer,size); n=pread(h,buffer,size,offset); }
     if (n<0) { if (audio_trace()) printf("Audio trace: pread(fd %d, %llu @%lld) failed, errno %d\n",fd,(unsigned long long)size,(long long)offset,errno); return -errno; }
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
     return n;
@@ -315,7 +366,12 @@ static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
 static int64_t do_write(int fd,const void *buffer,uint64_t size) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
-    ssize_t n=host_write(h,buffer,size);
+    ssize_t n;
+#ifdef GOW3_UWP
+    if(runtime_memory_is_mapped((uintptr_t)buffer,size)) n=paged_io(h,(void *)buffer,size,0,0,1);
+    else
+#endif
+    n=host_write(h,buffer,size);
     if (n<0) return -errno;
     __atomic_add_fetch(&writes,1,__ATOMIC_RELAXED);
     return n;
@@ -323,7 +379,12 @@ static int64_t do_write(int fd,const void *buffer,uint64_t size) {
 static int64_t do_pwrite(int fd,const void *buffer,uint64_t size,int64_t offset) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
-    ssize_t n=pwrite(h,buffer,size,offset);
+    ssize_t n;
+#ifdef GOW3_UWP
+    if(runtime_memory_is_mapped((uintptr_t)buffer,size)) n=paged_io(h,(void *)buffer,size,offset,1,1);
+    else
+#endif
+    n=pwrite(h,buffer,size,offset);
     return n<0 ? -errno : n;
 }
 static int64_t do_lseek(int fd,int64_t offset,int whence) {
