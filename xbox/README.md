@@ -74,6 +74,47 @@ split reads into fixed 4,095-byte pieces. This fix adds no read-ahead buffer or
 extra cache. Remaining renderer/command-recorder waits require separate analysis;
 desktop results do not establish the console's complete frame-time behavior.
 
+## Gameplay performance profile
+
+UWP defaults now select 720p at a 60 Hz engine rate, no game multisampling,
+deferred/previous-frame GPU readbacks, the two-stage draw pipeline and threaded
+Vulkan recording. Saved pipelines remain cached. Cache rebuilding happens before
+gameplay rather than competing with it; where supported, saved pipeline binaries
+continue to use the renderer's on-demand path. New graphics shaders/pipelines
+compile asynchronously, which can briefly delay a newly encountered effect.
+
+UWP limits runtime compilation to two compile workers, one snapshot worker,
+16 queued compile jobs and two retained IR pools. Pipeline warm-up also uses at
+most two workers. Desktop builds outside UWP retain their existing concurrency.
+Frames queued defaults to two, with cached host stream buffers. Copy/preparation
+workers stay disabled as in the established Xbox compatibility profile.
+
+Private `graphics-debug.txt` can override `GOW3_BACKGROUND_WARMUP`,
+`GOW3_PARALLEL_WARMUP`, `GOW3_PIPELINE_BINARIES`, `GOW3_FRAMES_AHEAD` and
+`GOW3_STREAM_MEMORY`, alongside the existing async/readback/cache switches.
+These are renderer settings; cached host stream memory is unrelated to Windows'
+file cache. Normal test profiles disable frame captures and detailed frame/I/O
+diagnostics after verification, and leave scripted controls neutral.
+
+A bounded desktop UWP combat check loaded 336/336 saved pipelines before play
+in 2.06 seconds, rendered combat/effects and exited at its deadline. Native async
+compiler tests and both desktop/UWP warm-up inbox checks passed. This is a
+compatibility check, not proof of an FPS increase: multi-second command-completion
+waits with zero synchronous shader compilations still occurred. The reported
+orb-spawn hitch is not established as fixed. A live console trace before this
+change also showed repeated FPS drops around 4.1 GiB usage with unchanged swap
+counters; active swapping did not explain those particular drops.
+
+Series X package `1.0.26289.2220` verified the same profile: 2,100/2,100 saved
+pipelines loaded before gameplay in 14.56 seconds with two workers. The bounded
+opening/combat run peaked at 4,587 MiB in periodic measurements, below the
+5,120 MiB limit, with no recorded swap activity. Roughly three-second graphics
+command-completion stalls remained. Both test apps were closed; console shutdown
+initially timed out, then a subsequent process query confirmed no selected
+package process. Normal configuration was verified by hash and scripted input
+was empty. These results validate the profile without attributing the orb hitch
+to a specific effect or claiming a measured FPS gain.
+
 ## Files and privacy
 
 - `platform/`: UWP host and compatibility adapters. Only this build uses the adapters.

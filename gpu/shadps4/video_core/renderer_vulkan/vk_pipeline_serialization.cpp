@@ -518,7 +518,11 @@ struct PipelineCache::WarmupPool {
             return 0;
         }
         const u32 cores = std::max(1u, std::thread::hardware_concurrency());
+#ifdef GOW3_UWP
+        return WarmupThreadCount(cores);
+#else
         return std::clamp(cores > 2 ? cores - 2 : 1u, 1u, 6u);
+#endif
     }
 
     std::atomic<u32> built{0};

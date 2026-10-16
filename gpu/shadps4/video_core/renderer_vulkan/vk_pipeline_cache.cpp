@@ -405,8 +405,17 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     // gow3: the compiler threads always exist; the in-game menu switches async compilation live
     // (Gow3Settings::async_shaders, GOW3_ASYNC_SHADERS at start).
     {
+#ifdef GOW3_UWP
+        // Xbox shares its 5 GiB budget with the game and driver. Avoid six simultaneous IR/DXIL
+        // builds and a large backlog when a particle effect introduces several new shaders.
+        const auto count = std::clamp(Gow3Threads::Available() / 2, 1u, 2u);
+        const unsigned capture_count = 1;
+        const size_t compile_capacity = 16;
+#else
         const auto count = std::clamp(Gow3Threads::Available() / 2, 1u, 6u);
         const auto capture_count = std::min(2u, std::max(1u, Gow3Threads::Available() / 4));
+        const size_t compile_capacity = 64;
+#endif
         for (unsigned i = 0; i < count; ++i) {
             auto [result, worker_cache] = instance.GetDevice().createPipelineCacheUnique({});
             ASSERT_MSG(result == vk::Result::eSuccess, "Failed to create compiler pipeline cache");
@@ -416,7 +425,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             Common::SetCurrentThreadName(("gow3:ShaderCapture" + std::to_string(index)).c_str());
             Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
         });
-        compiler = std::make_unique<AsyncCompiler>(count, 64, [](unsigned index) {
+        compiler = std::make_unique<AsyncCompiler>(count, compile_capacity, [](unsigned index) {
             Common::SetCurrentThreadName(("gow3:ShaderCompile" + std::to_string(index)).c_str());
             Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
         });

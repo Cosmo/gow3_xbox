@@ -18,6 +18,7 @@
 #include <thread>
 #include <atomic>
 #include <vector>
+#include <utility>
 
 extern "C" int gow3_probe_main(int argc,char **argv);
 extern "C" FILE *gow3_uwp_fopen(const char *path,const char *mode);
@@ -105,7 +106,9 @@ static void loader() {
            key=="GOW3_UWP_TEXTURE_ADDRESSES"||key=="GOW3_DEFERRED_READBACK"||
            key=="GOW3_STALE_READBACK"||key=="GOW3_ASYNC_SHADERS"||key=="GOW3_PIPELINE_CACHE"||
            key=="GOW3_UWP_METRICS"||key=="GOW3_VK_RECORD_THREAD"||key=="GOW3_GC_BUDGET_MB"||key=="GOW3_UWP_SWAP"||
-           key=="GOW3_PRECOMPILE_AUTORUN"||key=="GOW3_FRAME_STATS"||key=="GOW3_IO_STATS") {
+           key=="GOW3_PRECOMPILE_AUTORUN"||key=="GOW3_FRAME_STATS"||key=="GOW3_IO_STATS"||
+           key=="GOW3_BACKGROUND_WARMUP"||key=="GOW3_PARALLEL_WARMUP"||
+           key=="GOW3_PIPELINE_BINARIES"||key=="GOW3_FRAMES_AHEAD"||key=="GOW3_STREAM_MEMORY") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }
@@ -182,11 +185,19 @@ static void loader() {
     _putenv_s("GOW3_READBACK_LINEAR","1");
     if(!std::getenv("GOW3_NO_MSAA")) _putenv_s("GOW3_NO_MSAA","1");
     if(!std::getenv("GOW3_DRAW_PIPE")) _putenv_s("GOW3_DRAW_PIPE","1");
-    if(!std::getenv("GOW3_VK_RECORD_THREAD")) _putenv_s("GOW3_VK_RECORD_THREAD","0");
+    if(!std::getenv("GOW3_VK_RECORD_THREAD")) _putenv_s("GOW3_VK_RECORD_THREAD","1");
     _putenv_s("GOW3_COPY_THREADS","0");
     _putenv_s("GOW3_PREP_WORKERS","0");
-    if(!std::getenv("GOW3_ASYNC_SHADERS")) _putenv_s("GOW3_ASYNC_SHADERS","0");
-    if(!std::getenv("GOW3_PIPELINE_CACHE")) _putenv_s("GOW3_PIPELINE_CACHE","0");
+    // Finish saved-pipeline loading before play; reserve background compilation for new effects.
+    // Compiler concurrency and retained IR pools are bounded separately in the UWP renderer.
+    const std::pair<const char*,const char*> performance_defaults[]={
+        {"GOW3_ASYNC_SHADERS","1"},{"GOW3_PIPELINE_CACHE","1"},
+        {"GOW3_BACKGROUND_WARMUP","0"},{"GOW3_PARALLEL_WARMUP","1"},
+        {"GOW3_PIPELINE_BINARIES","1"},{"GOW3_FRAMES_AHEAD","2"},
+        {"GOW3_STREAM_MEMORY","cached"},{"GOW3_DEFERRED_READBACK","1"},
+        {"GOW3_STALE_READBACK","1"},{"GOW3_UWP_RENDER_RES","720p"}
+    };
+    for(auto [key,value]:performance_defaults) if(!std::getenv(key)) _putenv_s(key,value);
     const char* render_res=std::getenv("GOW3_UWP_RENDER_RES");
     const bool use_720p=render_res&&std::strcmp(render_res,"720p")==0;
     std::string patches=package+"\\Prepared\\patches-"+(use_720p?"720p":"native")+".bin";
@@ -198,6 +209,9 @@ static void loader() {
     std::printf("UWP renderer: draw pipe %s, record thread %s, async shaders %s, pipeline cache %s\n",
         std::getenv("GOW3_DRAW_PIPE"),std::getenv("GOW3_VK_RECORD_THREAD"),
         std::getenv("GOW3_ASYNC_SHADERS"),std::getenv("GOW3_PIPELINE_CACHE"));
+    std::printf("UWP performance: background warm-up %s, parallel warm-up %s, pipeline binaries %s, frames ahead %s, stream memory %s\n",
+        std::getenv("GOW3_BACKGROUND_WARMUP"),std::getenv("GOW3_PARALLEL_WARMUP"),
+        std::getenv("GOW3_PIPELINE_BINARIES"),std::getenv("GOW3_FRAMES_AHEAD"),std::getenv("GOW3_STREAM_MEMORY"));
     std::puts("Running the existing loader and runtime with native UWP audio output.");
     std::vector<std::string> arguments={"gow3-uwp",boot};
 #ifdef GOW3_LINK_RENDERER
