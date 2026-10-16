@@ -13,6 +13,7 @@
 #include "video_core/amdgpu/regs_depth.h"
 #include "video_core/amdgpu/regs_primitive.h"
 #include "video_core/renderer_vulkan/vk_pipeline_common.h"
+#include "video_core/renderer_vulkan/vk_baked_state.h"
 
 namespace VideoCore {
 class BufferCache;
@@ -32,6 +33,7 @@ template <typename T>
 using VertexInputs = boost::container::static_vector<T, MaxVertexBufferCount>;
 
 struct GraphicsPipelineKey {
+    BakedGraphicsState baked;
     std::array<size_t, MaxShaderStages> stage_hashes;
     std::array<vk::Format, MaxVertexBufferCount> vertex_buffer_formats;
     u32 patch_control_points;

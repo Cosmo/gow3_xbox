@@ -2,6 +2,8 @@
 #include "gow3_shader_inputs.h"
 #include "gow3_shader_template.h"
 #include "gow3_template_cache.h"
+#include "video_core/renderer_vulkan/vk_baked_state.h"
+#include <memory>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -14,6 +16,50 @@ int RunOfflineShaderChecks() {
         if (!condition)
             throw std::runtime_error("Native shader preparation check failed");
     };
+    {
+        const auto check = [](bool condition) {
+            if (!condition) throw std::runtime_error("Baked graphics state check failed");
+        };
+        auto regs = std::make_unique<AmdGpu::Regs>();
+        regs->primitive_type = AmdGpu::PrimitiveType::TriangleList;
+        const auto state = [&] { return Vulkan::GetBakedGraphicsState(*regs, false, false, true, false); };
+        const auto empty = state();
+        regs->depth_control.depth_func = AmdGpu::CompareFunc::Less;
+        const auto unused_compare = state();
+        check(std::memcmp(&empty, &unused_compare, sizeof(empty)) == 0);
+        regs->depth_buffer.z_read_base = regs->depth_buffer.z_write_base = 1;
+        regs->depth_buffer.z_info.format = AmdGpu::DepthBuffer::ZFormat::Z32Float;
+        regs->depth_control.depth_enable = 1;
+        regs->depth_control.depth_write_enable = 1;
+        check(state().depth_test && state().depth_write);
+        regs->depth_render_control.depth_clear_enable = 1;
+        check(!state().depth_write);
+        regs->depth_buffer.stencil_read_base = regs->depth_buffer.stencil_write_base = 1;
+        regs->depth_buffer.stencil_info.format = AmdGpu::DepthBuffer::StencilFormat::Stencil8;
+        regs->depth_control.stencil_enable = 1;
+        regs->depth_control.stencil_ref_func = AmdGpu::CompareFunc::Less;
+        regs->stencil_ref_front.stencil_mask = 0x7f;
+        regs->stencil_ref_front.stencil_write_mask = 0x3f;
+        check(state().stencil_test && state().front.compareMask == 0x7f);
+        check(state().front == state().back);
+        regs->depth_control.backface_enable = 1;
+        regs->depth_control.stencil_bf_func = AmdGpu::CompareFunc::Greater;
+        regs->stencil_ref_back.stencil_write_mask = 0x1f;
+        check(state().back.writeMask == 0x1f && state().front.writeMask == 0x3f);
+        regs->depth_render_control.stencil_clear_enable = 1;
+        check(state().front.writeMask == 0 && state().back.writeMask == 0);
+        regs->polygon_control.enable_polygon_offset_front = 1;
+        regs->poly_offset.front_scale = 16.f;
+        check(state().bias_slope == 1.f);
+        check(Vulkan::GetBakedGraphicsState(*regs, false, false, true, true).bias_slope == 16.f);
+        regs->primitive_type = AmdGpu::PrimitiveType::RectList;
+        regs->enable_primitive_restart = 1;
+        check(!state().restart);
+        check(Vulkan::IsBakedDynamicState(vk::DynamicState::eDepthCompareOp));
+        check(!Vulkan::IsBakedDynamicState(vk::DynamicState::eStencilReference));
+        check(!Vulkan::IsBakedDynamicState(vk::DynamicState::eViewportWithCount));
+        std::puts("PASS: baked graphics state normalization, depth/stencil, bias and restart");
+    }
     const std::array<u32, 4> usages = {0x0002011b, 0x03040200, 0x000c0201, 0x00100002};
     AssetInputs inputs(usages, 3);
     require(!inputs.Parametric());

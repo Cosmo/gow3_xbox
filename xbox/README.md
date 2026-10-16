@@ -115,6 +115,55 @@ package process. Normal configuration was verified by hash and scripted input
 was empty. These results validate the profile without attributing the orb hitch
 to a specific effect or claiming a measured FPS gain.
 
+## Orb/effect stalls: Dozen pipeline state
+
+Desktop command tracing isolated repeated 100–170 ms CPU stalls inside graphics
+draw recording, rather than guest memory copies. Dozen emulates Vulkan dynamic
+depth/stencil, rasterization and restart state with D3D12 PSO variants, created
+at draw time. A cached Vulkan pipeline therefore did not mean its D3D12 variant
+was ready, and the ordinary shader-compile timer missed this work.
+
+On Dozen, effective PSO state is now part of `GraphicsPipelineKey` and supplied
+as static Vulkan state. Async creation and cache warm-up can build the actual
+D3D12 PSO before drawing. Viewports, scissors, stencil reference and other states
+that do not require a new PSO remain dynamic. Other Vulkan drivers keep their
+existing dynamic-state path. Primitive restart can still need Dozen's
+index-format variants. `GOW3_BAKED_PIPELINES=0` restores the dynamic path for
+comparison; it requires restarting the app.
+
+Pipeline record version 6 ignores the old records, which lacked the required
+state; shader/precompiled-template caches remain available. New records rebuild
+as effects are encountered and load on later starts. A desktop restart loaded
+278 new records in 10.59 seconds; stale old records were skipped.
+
+Equal-duration, scripted desktop opening/combat traces with command diagnostics:
+
+| Measurement | Before | First fixed run |
+| --- | ---: | ---: |
+| Draw calls taking over 10 ms | 248 | 3 |
+| Longest draw call | 172.1 ms | 24.7 ms |
+| Longest frame | 2,845.2 ms | 372.0 ms |
+| Frames over 500 ms | 3 | 0 |
+| Red-orb gain callbacks | 23 | 70 |
+
+These are separate combat runs, not frame-identical FPS benchmarks. Remaining
+shorter stalls are not claimed fixed, and this change has not yet been checked
+on Xbox. Native checks cover disabled-state normalization, depth-clear write
+suppression, independent/backface stencil masks, stencil-clear behavior, depth
+bias scaling, emulated-primitive restart and states retained as dynamic.
+
+A further restart/combat check with a simulated 5 GiB pager/cache budget recorded
+92 red-orb gain callbacks. Paging completed 1,894 integrity checks with no
+corruption (111 MiB written, 29 MiB read). This does not impose an OS memory cap
+on desktop UWP. The user reported a concurrent PC build, so this final run's
+frame timings are excluded from performance conclusions. The app was closed,
+scripted input released, temporary memory-budget file removed and diagnostic
+overrides cleared after testing. No Xbox deployment was performed for this fix.
+
+Private `GOW3_RECORDER_TIMINGS=1` logs recording commands taking at least 10 ms
+and timestamps red-orb gain callbacks. It is disabled in normal use. Desktop
+game tests use a stop watchdog and release scripted controls when finished.
+
 ## Files and privacy
 
 - `platform/`: UWP host and compatibility adapters. Only this build uses the adapters.

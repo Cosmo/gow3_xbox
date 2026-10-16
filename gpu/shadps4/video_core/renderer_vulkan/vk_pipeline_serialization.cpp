@@ -36,7 +36,7 @@ namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 static constexpr u32 ShaderBinaryVersion = 7u; // gow3: interpolated integer fix (Pascal)
 static constexpr u32 ShaderMetaVersion = 7u; // gow3: ImageResource::needs_native
-static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
+static constexpr u32 PipelineKeyVersion = 6u; // gow3: keyed static Dozen graphics state
 } // namespace Serialization
 
 namespace Vulkan {

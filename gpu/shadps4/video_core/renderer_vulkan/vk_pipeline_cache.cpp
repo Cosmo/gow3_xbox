@@ -837,6 +837,16 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     const auto& regs = (*sel.regs);
     auto& key = sel.graphics_key;
 
+    static const bool bake_states = [&] {
+        const char* env = std::getenv("GOW3_BAKED_PIPELINES");
+        return instance.GetDriverID() == vk::DriverId::eMesaDozen && !(env && env[0] == '0');
+    }();
+    if (bake_states) {
+        key.baked = GetBakedGraphicsState(regs, instance.IsListRestartSupported(),
+                                         instance.IsPatchListRestartSupported(),
+                                         instance.IsDepthBoundsSupported(), LightingTest::Current().bias);
+    }
+
     // gow3: a depth/stencil buffer that cannot affect the draw is not attached: on the PC a
     // smaller one would crop a full-screen pass (eltutz, vk_depth_stencil_state.h).
     const bool db_enabled = GetEffectiveDepthStencilState(regs).needs_attachment;

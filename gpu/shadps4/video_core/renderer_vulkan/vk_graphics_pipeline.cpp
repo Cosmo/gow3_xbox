@@ -112,6 +112,7 @@ GraphicsPipeline::GraphicsPipeline(
         : vk::PrimitiveTopology::eLineListWithAdjacency) : LiverpoolToVK::PrimitiveType(key.prim_type);
     const vk::PipelineInputAssemblyStateCreateInfo input_assembly = {
         .topology = topology,
+        .primitiveRestartEnable = key.baked.enabled && key.baked.restart,
     };
 
     const vk::PipelineTessellationStateCreateInfo tessellation_state = {
@@ -135,6 +136,17 @@ GraphicsPipeline::GraphicsPipeline(
             .depthClipEnable = key.depth_clip_enable,
         },
     };
+
+    if (key.baked.enabled) {
+        auto& raster = raster_chain.get<vk::PipelineRasterizationStateCreateInfo>();
+        raster.rasterizerDiscardEnable = key.baked.discard;
+        raster.cullMode = vk::CullModeFlags{key.baked.cull_mode};
+        raster.frontFace = vk::FrontFace(key.baked.front_face);
+        raster.depthBiasEnable = key.baked.depth_bias;
+        raster.depthBiasConstantFactor = key.baked.bias_constant;
+        raster.depthBiasClamp = key.baked.bias_clamp;
+        raster.depthBiasSlopeFactor = key.baked.bias_slope;
+    }
 
     if (!instance.IsProvokingVertexSupported()) {
         raster_chain.unlink<vk::PipelineRasterizationProvokingVertexStateCreateInfoEXT>();
@@ -188,6 +200,10 @@ GraphicsPipeline::GraphicsPipeline(
         dynamic_states.push_back(vk::DynamicState::eVertexInputBindingStride);
     }
 
+    if (key.baked.enabled) {
+        dynamic_states.erase(std::remove_if(dynamic_states.begin(), dynamic_states.end(),
+                                            IsBakedDynamicState), dynamic_states.end());
+    }
     const vk::PipelineDynamicStateCreateInfo dynamic_info = {
         .dynamicStateCount = static_cast<u32>(dynamic_states.size()),
         .pDynamicStates = dynamic_states.data(),
@@ -427,9 +443,19 @@ GraphicsPipeline::GraphicsPipeline(
         .blendConstants = std::array{1.0f, 1.0f, 1.0f, 1.0f},
     };
 
-    // Required by spec unless VK_EXT_extended_dynamic_state3 is supported.
-    // In practice, we use dynamic state for all of it.
-    constexpr vk::PipelineDepthStencilStateCreateInfo depth_stencil_info = {};
+    // Other drivers keep this state dynamic. Dozen receives the keyed static values so
+    // constructing this pipeline also compiles its D3D12 PSO on the compiler/warm-up worker.
+    const vk::PipelineDepthStencilStateCreateInfo depth_stencil_info = {
+        .depthTestEnable = key.baked.depth_test,
+        .depthWriteEnable = key.baked.depth_write,
+        .depthCompareOp = vk::CompareOp(key.baked.depth_compare),
+        .depthBoundsTestEnable = key.baked.depth_bounds,
+        .stencilTestEnable = key.baked.stencil_test,
+        .front = key.baked.front,
+        .back = key.baked.back,
+        .minDepthBounds = 0.f,
+        .maxDepthBounds = 1.f,
+    };
 
     const vk::GraphicsPipelineCreateInfo pipeline_info = {
         .pNext = &pipeline_rendering_ci,
@@ -442,7 +468,8 @@ GraphicsPipeline::GraphicsPipeline(
         .pRasterizationState = &raster_chain.get(),
         .pMultisampleState = &sdata.multisampling,
         .pDepthStencilState =
-            !instance.IsExtendedDynamicState3Supported() ? &depth_stencil_info : nullptr,
+            key.baked.enabled || !instance.IsExtendedDynamicState3Supported()
+                ? &depth_stencil_info : nullptr,
         .pColorBlendState = &color_blending,
         .pDynamicState = &dynamic_info,
         .layout = *pipeline_layout,
