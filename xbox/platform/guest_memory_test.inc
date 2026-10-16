@@ -28,6 +28,14 @@ int runtime_memory_selftest(void) {
     if(kernel_mprotect(remapped,PAGE,1)) return 11;
     uint32_t copy=0x87654321;
     if(!runtime_memory_write_backing((uintptr_t)remapped,&copy,sizeof(copy)) || value[0]!=copy || other[0]!=copy) return 12;
+    // Removing the canonical mapping must choose the live alias as owner;
+    // removing the final mapping must preserve contents without an owner search.
+    if(direct_unmap(remapped,2*PAGE) || other[0]!=copy || other[PAGE/4]!=0x12345678) return 90;
+    remapped=NULL;
+    if(direct_map(&remapped,2*PAGE,3,0,physical,PAGE)) return 91;
+    value=remapped;
+    if(value[0]!=copy || value[PAGE/4]!=0x12345678) return 92;
+    if(direct_unmap(alias,2*PAGE) || value[0]!=copy) return 93;
     if(direct_release((uint64_t)physical,2*PAGE)) return 13;
     first=NULL;
     if(direct_allocate(0,(int64_t)POOL_SIZE,PAGE,PAGE,0,&physical) || direct_map(&first,PAGE,3,0,physical,PAGE)) return 14;

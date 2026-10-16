@@ -241,7 +241,8 @@ static void uwp_swap_report(void) {
     uint64_t out=uwp_swap_out,in=uwp_swap_in,disk=uwp_swap_disk_pages,views=uwp_swap_views;
     uint64_t checks=uwp_swap_hash_checks,errors=uwp_swap_hash_errors,evictions=uwp_swap_view_evictions;
     ReleaseSRWLockExclusive(&uwp_commit_lock); read_unlock();
-    if(!out) return;
+    const char *profile=getenv("GOW3_IO_STATS");
+    if(!out&&!(profile&&*profile=='1')) return;
     printf("UWP swap: out=%" PRIu64 " in=%" PRIu64 " disk=%" PRIu64 " views=%" PRIu64
            " MiB; checks=%" PRIu64 " corrupt=%" PRIu64 " window evictions=%" PRIu64 "\n",
            out>>20,in>>20,disk*PAGE>>20,views*PAGE>>20,checks,errors,evictions);

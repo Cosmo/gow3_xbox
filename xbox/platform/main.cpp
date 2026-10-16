@@ -105,7 +105,7 @@ static void loader() {
            key=="GOW3_UWP_TEXTURE_ADDRESSES"||key=="GOW3_DEFERRED_READBACK"||
            key=="GOW3_STALE_READBACK"||key=="GOW3_ASYNC_SHADERS"||key=="GOW3_PIPELINE_CACHE"||
            key=="GOW3_UWP_METRICS"||key=="GOW3_VK_RECORD_THREAD"||key=="GOW3_GC_BUDGET_MB"||key=="GOW3_UWP_SWAP"||
-           key=="GOW3_PRECOMPILE_AUTORUN") {
+           key=="GOW3_PRECOMPILE_AUTORUN"||key=="GOW3_FRAME_STATS"||key=="GOW3_IO_STATS") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }

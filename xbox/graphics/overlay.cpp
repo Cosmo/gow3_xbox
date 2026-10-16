@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "overlay.h"
+extern "C" void runtime_file_profile_report(void);
 #include "overlay_chord.h"
 #include "imgui.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -91,6 +92,7 @@ void Render(const Vulkan::Instance& instance) {
             std::chrono::duration_cast<std::chrono::seconds>(now-started).count(),fps,average,cpu,
             used>>20,limit>>20,gpu_allocated>>20,gpu_reserved>>20);
         reported=now;
+        runtime_file_profile_report();
     }
     if(!Visible()) return;
     const float scale=std::max(ImGui::GetIO().DisplaySize.y/1080.0f,0.75f);

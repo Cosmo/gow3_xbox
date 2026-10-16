@@ -67,12 +67,39 @@ static pthread_rwlock_t lock=PTHREAD_RWLOCK_INITIALIZER;
 static __thread unsigned exclusive_depth;
 /* Odd while a writer holds the lock; readers' region caches are valid for one even value. */
 static uint64_t table_generation;
-static void write_lock(void) {
-    if (!exclusive_depth++) { pthread_rwlock_wrlock(&lock); __atomic_add_fetch(&table_generation,1,__ATOMIC_ACQ_REL); }
+#ifdef GOW3_UWP
+static __thread uint64_t profile_write_started;
+static __thread const char *profile_write_operation;
+static int profile_memory_lock(void) {
+    const char *value=getenv("GOW3_IO_STATS");
+    return value&&*value=='1';
+}
+#endif
+static void write_lock_at(const char *operation) {
+    if (!exclusive_depth++) {
+        pthread_rwlock_wrlock(&lock);
+        __atomic_add_fetch(&table_generation,1,__ATOMIC_ACQ_REL);
+#ifdef GOW3_UWP
+        profile_write_started=profile_memory_lock() ? GetTickCount64() : 0;
+        profile_write_operation=operation;
+#else
+        (void)operation;
+#endif
+    }
 }
 static void write_unlock(void) {
-    if (!--exclusive_depth) { __atomic_add_fetch(&table_generation,1,__ATOMIC_RELEASE); pthread_rwlock_unlock(&lock); }
+    if (!--exclusive_depth) {
+#ifdef GOW3_UWP
+        const uint64_t elapsed=profile_write_started ? GetTickCount64()-profile_write_started : 0;
+#endif
+        __atomic_add_fetch(&table_generation,1,__ATOMIC_RELEASE);
+        pthread_rwlock_unlock(&lock);
+#ifdef GOW3_UWP
+        if(elapsed>=40) printf("Memory lock: %s held region table for %llu ms\n",profile_write_operation,(unsigned long long)elapsed);
+#endif
+    }
 }
+#define write_lock() write_lock_at(__func__)
 static void read_lock(void) { if (!exclusive_depth) pthread_rwlock_rdlock(&lock); }
 static void read_unlock(void) { if (!exclusive_depth) pthread_rwlock_unlock(&lock); }
 static Block blocks[LIMIT];

@@ -39,6 +39,32 @@ allocator and produces the failure above. This is a diagnostic milestone, not a 
 workaround. The external dump-access check is separate from packaged-code execution:
 an inaccessible dump does not establish working game-file IO.
 
+## Stutter diagnostics and memory-release fix
+
+An instrumented desktop UWP run reproduced a long opening pause with about
+10.7 seconds spent checking whether file-read buffers belonged to guest mappings,
+while actual host reads in that interval took only 4 milliseconds. Memory unmaps
+held the shared region-table lock for up to 3.4 seconds each. No guest swap-in or
+swap-out occurred during the reproduction.
+
+`uwp_detach` searched the entire virtual-page table for a replacement physical-page
+owner even when only the mapping being removed remained. Large releases therefore
+repeated the same unsuccessful scan for every page. The reference count now skips
+that search for the last mapping; live aliases retain replacement-owner lookup.
+The memory contract includes canonical-owner removal and final-alias removal.
+
+Private `graphics-debug.txt` accepts `GOW3_FRAME_STATS=1` and `GOW3_IO_STATS=1`.
+Frame diagnostics separate compilation, graphics synchronization and collection
+waits. I/O diagnostics report requested reads, small-read counts, actual host-read
+time, guest-buffer copies and mapping-lookup time in five-second intervals. Totals
+can overlap between threads and are not a frame-time decomposition. Paging reports
+also show zero activity when I/O profiling is enabled. Diagnostics are opt-in.
+
+Game files already use normal Windows caching; the compatibility layer does not
+split reads into fixed 4,095-byte pieces. This fix adds no read-ahead buffer or
+extra cache. Remaining renderer/command-recorder waits require separate analysis;
+desktop results do not establish the console's complete frame-time behavior.
+
 ## Files and privacy
 
 - `platform/`: UWP host and compatibility adapters. Only this build uses the adapters.

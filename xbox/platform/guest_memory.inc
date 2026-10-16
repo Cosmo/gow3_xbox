@@ -149,7 +149,11 @@ static int uwp_detach(UwpPage *page,int preserve) {
     }
     if(physical->owner==page->address) {
         physical->owner=0;
-        for(size_t i=0;i<uwp_count;++i) if(uwp_pages[i].mapped && &uwp_pages[i]!=page && uwp_pages[i].physical==page->physical) { physical->owner=uwp_pages[i].address; break; }
+        // With only this mapping left there cannot be a replacement owner.
+        // Searching every virtual page for every released page makes large
+        // unmaps quadratic and blocks file reads behind the region-table lock.
+        if(physical->references>1)
+            for(size_t i=0;i<uwp_count;++i) if(uwp_pages[i].mapped && &uwp_pages[i]!=page && uwp_pages[i].physical==page->physical) { physical->owner=uwp_pages[i].address; break; }
     }
     if(physical->references) --physical->references;
     page->mapped=page->kind=page->committed=0;
