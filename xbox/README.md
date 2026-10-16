@@ -158,7 +158,10 @@ corruption (111 MiB written, 29 MiB read). This does not impose an OS memory cap
 on desktop UWP. The user reported a concurrent PC build, so this final run's
 frame timings are excluded from performance conclusions. The app was closed,
 scripted input released, temporary memory-budget file removed and diagnostic
-overrides cleared after testing. No Xbox deployment was performed for this fix.
+overrides cleared after testing. Xbox package `1.0.26289.2309` now contains this
+fix (`d1f007e`). Installation, settings read-back and empty scripted input were
+verified; the app was left closed for manual testing. Xbox gameplay validation
+is still pending.
 
 Private `GOW3_RECORDER_TIMINGS=1` logs recording commands taking at least 10 ms
 and timestamps red-orb gain callbacks. It is disabled in normal use. Desktop
