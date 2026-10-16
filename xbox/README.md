@@ -53,6 +53,15 @@ repeated the same unsuccessful scan for every page. The reference count now skip
 that search for the last mapping; live aliases retain replacement-owner lookup.
 The memory contract includes canonical-owner removal and final-alias removal.
 
+The fixed desktop opening run logged no unmap above the 40 ms threshold, compared
+with 50 before the fix; the former 11–12 second pauses disappeared. The same fix
+is installed on Series X as development package `1.0.26289.2202`. Its timed opening
+test also logged no long unmaps or paging. During combat at approximately 4.0 GiB
+app usage, host reads took only milliseconds per five-second interval, while
+graphics command/host-copy completion waits remained. This isolates a real
+release-time defect without claiming all remaining hitches or low FPS are fixed.
+Profiling itself has overhead, so these traces are not a clean FPS benchmark.
+
 Private `graphics-debug.txt` accepts `GOW3_FRAME_STATS=1` and `GOW3_IO_STATS=1`.
 Frame diagnostics separate compilation, graphics synchronization and collection
 waits. I/O diagnostics report requested reads, small-read counts, actual host-read
