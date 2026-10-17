@@ -276,16 +276,21 @@ static int uwp_backing_write(uintptr_t address,const void *source,uint64_t size)
             if(!view) { result=0; break; }
             memcpy((unsigned char *)view+offset,source,n); UnmapViewOfFile(view);
         } else {
-            uwp_commit(page); DWORD old,protections[4];
-            for(unsigned i=0;i<4;++i) {
-                MEMORY_BASIC_INFORMATION info;
-                if(!VirtualQuery((void *)(page->address+i*4096),&info,sizeof(info))) uwp_fail("host copy protection query",page->address);
-                protections[i]=info.Protect;
+            uwp_commit(page);
+            // Fence writes are usually eight bytes. Touch only their 4 KiB host
+            // pages; changing all 16 KiB also stalls unrelated guest writers.
+            for(uint64_t copied=0;copied<n;) {
+                uintptr_t at=address+copied,subpage=at&~(uintptr_t)4095;
+                uint64_t bytes=4096-(at-subpage); if(bytes>n-copied) bytes=n-copied;
+                MEMORY_BASIC_INFORMATION info; DWORD old;
+                if(!VirtualQuery((void *)subpage,&info,sizeof(info))) uwp_fail("host copy protection query",subpage);
+                int change=info.Protect!=PAGE_READWRITE && info.Protect!=PAGE_EXECUTE_READWRITE;
+                if(change && !VirtualProtectFromApp((void *)subpage,4096,PAGE_READWRITE,&old)) { result=0; break; }
+                memcpy((void *)at,(const unsigned char *)source+copied,bytes);
+                if(change && !VirtualProtectFromApp((void *)subpage,4096,info.Protect,&old)) uwp_fail("host copy protection restore",subpage);
+                copied+=bytes;
             }
-            if(!VirtualProtectFromApp((void *)page->address,PAGE,PAGE_READWRITE,&old)) { result=0; break; }
-            memcpy((void *)address,source,n);
-            for(unsigned i=0;i<4;++i)
-                if(!VirtualProtectFromApp((void *)(page->address+i*4096),4096,protections[i],&old)) uwp_fail("host copy protection restore",page->address);
+            if(!result) break;
         }
         address+=n; source=(const unsigned char *)source+n; size-=n;
     }

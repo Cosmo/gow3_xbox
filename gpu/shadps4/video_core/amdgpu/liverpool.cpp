@@ -247,13 +247,29 @@ namespace {
 void SignalEop(const PM4CmdEventWriteEop& eop) {
     eop.SignalFence(
         [](void* address, u64 data, u32 num_bytes) {
+            const auto started = Gow3Stats::enabled ? std::chrono::steady_clock::now()
+                                                   : std::chrono::steady_clock::time_point{};
             auto* memory = Core::Memory::Instance();
             Gow3WriteLog::Note(reinterpret_cast<u64>(address), &data, num_bytes, Gow3WriteLog::Fence);
             if (!memory->TryWriteBacking(address, &data, num_bytes)) {
                 memcpy(address, &data, num_bytes);
             }
+            if (Gow3Stats::enabled) {
+                const double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - started).count();
+                if (ms >= 5.0) std::printf("Fence backing write: %.3f ms; %p, %u bytes\n", ms, address, num_bytes);
+            }
         },
-        [] { Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxEop); });
+        [] {
+            const auto started = Gow3Stats::enabled ? std::chrono::steady_clock::now()
+                                                   : std::chrono::steady_clock::time_point{};
+            Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxEop);
+            if (Gow3Stats::enabled) {
+                const double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - started).count();
+                if (ms >= 5.0) std::printf("Fence interrupt: %.3f ms\n", ms);
+            }
+        });
 }
 
 // gow3: end-of-pipe/-shader events run in order with the draws (Rasterizer::RunInOrder: on

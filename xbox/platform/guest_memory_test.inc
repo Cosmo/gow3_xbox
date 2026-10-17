@@ -8,6 +8,14 @@ static void *uwp_test_protect_pages(void *opaque) {
     return NULL;
 }
 extern uint64_t gow3_uwp_app_memory_usage(void);
+static void *uwp_test_table_writer(void *opaque) {
+    volatile LONG *flags=opaque;
+    InterlockedExchange(&flags[0],1);
+    write_lock();
+    InterlockedExchange(&flags[1],1);
+    write_unlock();
+    return NULL;
+}
 int runtime_memory_selftest(void) {
     int64_t physical=0; void *first=NULL,*alias=NULL,*remapped=NULL;
     puts("UWP memory contract self-test starting");
@@ -43,6 +51,21 @@ int runtime_memory_selftest(void) {
     if(direct_release((uint64_t)physical,PAGE)) return 16;
     first=NULL;
     if(map_flexible(&first,2*PAGE,3,0)) return 17;
+    volatile LONG table_flags[2]={0,0};
+    pthread_t table_writer;
+    read_lock();
+    if(pthread_create(&table_writer,NULL,uwp_test_table_writer,(void *)table_flags)) { read_unlock(); return 101; }
+    while(!InterlockedCompareExchange(&table_flags[0],0,0)) Sleep(0);
+    Sleep(10);
+    uint32_t table_prot;
+    int nested_query=query_protection(first,NULL,NULL,&table_prot);
+    int writer_overlapped=InterlockedCompareExchange(&table_flags[1],0,0);
+    read_unlock();
+    if(pthread_join(table_writer,NULL) || nested_query || table_prot!=3 || !table_flags[1] || writer_overlapped) return 102;
+    write_lock();
+    nested_query=query_protection(first,NULL,NULL,&table_prot);
+    write_unlock();
+    if(nested_query || table_prot!=3) return 103;
     if(host_protect((uintptr_t)first+4096,4096,PROT_READ)) return 23;
     if(*((volatile uint32_t *)first+1024)) return 24;
     MEMORY_BASIC_INFORMATION before,restricted,after;
@@ -50,6 +73,15 @@ int runtime_memory_selftest(void) {
     if(before.Protect!=PAGE_READWRITE || restricted.Protect!=PAGE_READONLY || after.Protect!=PAGE_READWRITE) return 26;
     if(!runtime_memory_write_backing((uintptr_t)first+4096,&copy,sizeof(copy))) return 27;
     if(!VirtualQuery((unsigned char *)first+4096,&restricted,sizeof(restricted)) || restricted.Protect!=PAGE_READONLY) return 28;
+    if(host_protect((uintptr_t)first+12288,4096,0)) return 94;
+    uint64_t crossing=UINT64_C(0x1020304050607080),written=0;
+    if(!runtime_memory_write_backing((uintptr_t)first+8192-4,&crossing,sizeof(crossing))) return 95;
+    memcpy(&written,(unsigned char *)first+8192-4,sizeof(written));
+    if(written!=crossing) return 96;
+    if(!VirtualQuery(first,&before,sizeof(before)) || before.Protect!=PAGE_READWRITE) return 97;
+    if(!VirtualQuery((unsigned char *)first+4096,&restricted,sizeof(restricted)) || restricted.Protect!=PAGE_READONLY) return 98;
+    if(!VirtualQuery((unsigned char *)first+8192,&after,sizeof(after)) || after.Protect!=PAGE_READWRITE) return 99;
+    if(!VirtualQuery((unsigned char *)first+12288,&after,sizeof(after)) || after.Protect!=PAGE_NOACCESS) return 100;
     value=first; value[0]=0xabc; value[PAGE/4]=0xdef;
     if(release_flexible(first,PAGE)) return 18;
     remapped=NULL;
@@ -92,6 +124,7 @@ int runtime_memory_selftest(void) {
     puts("PASS: lazy zero pages, remap preservation, live aliases, protected host writes, zero on reuse");
     puts("PASS: partial flexible unmap retains the other page and reuses a zero page");
     puts("PASS: 4 KiB protection boundaries survive first commit and protected host copies");
+    puts("PASS: nested region queries preserve reader/writer exclusion with a queued writer");
     puts("PASS: concurrent page commits and protection changes agree with tracked permissions");
     puts("PASS: a stale read-only host page recovers to its tracked writable protection");
     puts("PASS: released guest pages are no longer committed in Windows");

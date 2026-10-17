@@ -73,6 +73,11 @@ public static class Gow3PackageDebug {
             Marshal.ThrowExceptionForHR(manager.EnableDebugging(package,IntPtr.Zero,IntPtr.Zero));
         } finally { Marshal.ReleaseComObject(manager); }
     }
+    public static void Disable(string package) {
+        var manager=(IGow3PackageDebug)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("B1AEC16F-2383-4852-B0E9-8F0B1DC66B4D")));
+        try { Marshal.ThrowExceptionForHR(manager.DisableDebugging(package)); }
+        finally { Marshal.ReleaseComObject(manager); }
+    }
 }
 '@
 }

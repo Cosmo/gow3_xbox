@@ -61,9 +61,15 @@ _Static_assert(sizeof(BatchEntry)==32,"PS4 batch map entry layout");
 /* Region table lock. Lookups (GPU per-draw queries, VirtualQuery, GPU page
  * protection) share it; map/unmap/protect take it exclusively. Both nest: code
  * under the lock may write guest memory, and a GPU-tracked page then faults into
- * runtime_memory_gpu_protect on the same thread. Readers nest because glibc's
- * default rwlock prefers readers; a thread holding it exclusively skips relocking. */
+ * runtime_memory_gpu_protect on the same thread. UWP counts nested readers around
+ * its native SRW lock; POSIX readers nest with the default reader-preferring rwlock.
+ * A thread holding the table exclusively skips relocking. */
+#ifdef GOW3_UWP
+static SRWLOCK lock=SRWLOCK_INIT;
+static __thread unsigned shared_depth;
+#else
 static pthread_rwlock_t lock=PTHREAD_RWLOCK_INITIALIZER;
+#endif
 static __thread unsigned exclusive_depth;
 /* Odd while a writer holds the lock; readers' region caches are valid for one even value. */
 static uint64_t table_generation;
@@ -77,7 +83,11 @@ static int profile_memory_lock(void) {
 #endif
 static void write_lock_at(const char *operation) {
     if (!exclusive_depth++) {
+#ifdef GOW3_UWP
+        AcquireSRWLockExclusive(&lock);
+#else
         pthread_rwlock_wrlock(&lock);
+#endif
         __atomic_add_fetch(&table_generation,1,__ATOMIC_ACQ_REL);
 #ifdef GOW3_UWP
         profile_write_started=profile_memory_lock() ? GetTickCount64() : 0;
@@ -93,15 +103,35 @@ static void write_unlock(void) {
         const uint64_t elapsed=profile_write_started ? GetTickCount64()-profile_write_started : 0;
 #endif
         __atomic_add_fetch(&table_generation,1,__ATOMIC_RELEASE);
+#ifdef GOW3_UWP
+        ReleaseSRWLockExclusive(&lock);
+#else
         pthread_rwlock_unlock(&lock);
+#endif
 #ifdef GOW3_UWP
         if(elapsed>=40) printf("Memory lock: %s held region table for %llu ms\n",profile_write_operation,(unsigned long long)elapsed);
 #endif
     }
 }
 #define write_lock() write_lock_at(__func__)
-static void read_lock(void) { if (!exclusive_depth) pthread_rwlock_rdlock(&lock); }
-static void read_unlock(void) { if (!exclusive_depth) pthread_rwlock_unlock(&lock); }
+static void read_lock(void) {
+    if (exclusive_depth) return;
+#ifdef GOW3_UWP
+    // Native SRW locks do not support recursive shared acquisition when a writer
+    // is waiting. Only the outermost reader enters the OS lock.
+    if (!shared_depth++) AcquireSRWLockShared(&lock);
+#else
+    pthread_rwlock_rdlock(&lock);
+#endif
+}
+static void read_unlock(void) {
+    if (exclusive_depth) return;
+#ifdef GOW3_UWP
+    if (!--shared_depth) ReleaseSRWLockShared(&lock);
+#else
+    pthread_rwlock_unlock(&lock);
+#endif
+}
 static Block blocks[LIMIT];
 static Vma *vmas; static size_t vma_count, vma_capacity;
 #ifndef _WIN32

@@ -167,6 +167,46 @@ Private `GOW3_RECORDER_TIMINGS=1` logs recording commands taking at least 10 ms
 and timestamps red-orb gain callbacks. It is disabled in normal use. Desktop
 game tests use a stop watchdog and release scripted controls when finished.
 
+### Arena checkpoint follow-up
+
+The user still reports severe effect slowdowns on Xbox after the pipeline-state
+fix. A copied Athena autosave now reproduces the later circular arena on PC;
+the opening fight alone is insufficient validation. GPU timestamp profiling
+stalled a diagnostic run at the menu and is disabled for this investigation.
+CPU frame timers are refreshed after UWP reads private settings, before renderer
+threads start, and `GOW3_PERF_DIAG` can enable the existing wait-site report.
+
+Arena tracing found repeated 10–33 ms fence-recording callbacks. The UWP private
+backing-write path queried all four host pages and changed/restored protection
+across an entire 16 KiB guest page for even an eight-byte fence write. It now
+queries only the touched 4 KiB pages and skips protection changes when already
+writable. Restricted pages retain their original protection. The UWP memory
+contract passes, including a write across mixed 4 KiB permissions, an untouched
+no-access neighbor, aliases, and 8,242 swap integrity checks without corruption.
+This change is not yet validated on Xbox and is not a claim that all orb stalls
+are fixed. Test saves and diagnostic configuration are restored after PC runs.
+
+UWP region-table access now uses a native Windows SRW lock instead of the
+winpthread reader/writer lock. Nested readers acquire the OS lock only once;
+queries made while holding it exclusively keep the previous bypass behavior.
+The memory contract also checks a nested query with a writer queued and a query
+inside an exclusive operation. Opt-in frame diagnostics distinguish long fence
+backing writes from interrupt notification; neither changes normal fence ordering.
+
+Two 60-second scripted combat runs from the same Athena save, with the same input
+and temporary survival/damage settings, isolated the table lock:
+
+| Measurement | winpthread table lock | Native SRW table lock |
+| --- | ---: | ---: |
+| Fence backing writes taking at least 5 ms | 79 | 0 |
+| Longest slow fence write | 33.01 ms | none at least 5 ms |
+| Red-orb gain callbacks | 77 | 69 |
+
+The fixed run still had individual long frames, so these results establish the
+fence-stall improvement, not a smooth-gameplay guarantee or an overall FPS gain.
+The PC app was closed after each test; temporary cheats, input, settings and saves
+were restored. Console verification remains pending.
+
 ## Files and privacy
 
 - `platform/`: UWP host and compatibility adapters. Only this build uses the adapters.

@@ -211,6 +211,10 @@ static void StartProfileWriter() {
 #endif
 
 extern "C" int gow3gpu_init(const Gow3GpuConfig* config) {
+    // UWP reads its private settings after CRT initialization. Refresh diagnostics before
+    // creating renderer threads; the startup environment alone can miss those overrides.
+    const char* frame_stats = std::getenv("GOW3_FRAME_STATS");
+    Gow3Stats::enabled = frame_stats && frame_stats[0] == '1';
     Gow3Settings::Load();
 #ifdef GOW3_PGO_GENERATE
     StartProfileWriter();
