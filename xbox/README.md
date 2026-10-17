@@ -183,8 +183,9 @@ queries only the touched 4 KiB pages and skips protection changes when already
 writable. Restricted pages retain their original protection. The UWP memory
 contract passes, including a write across mixed 4 KiB permissions, an untouched
 no-access neighbor, aliases, and 8,242 swap integrity checks without corruption.
-This change is not yet validated on Xbox and is not a claim that all orb stalls
-are fixed. Test saves and diagnostic configuration are restored after PC runs.
+The memory contract also passes on Xbox; combat performance there remains
+unverified. This is not a claim that all orb stalls are fixed. Test saves and
+diagnostic configuration are restored after PC runs.
 
 UWP region-table access now uses a native Windows SRW lock instead of the
 winpthread reader/writer lock. Nested readers acquire the OS lock only once;
@@ -205,7 +206,14 @@ and temporary survival/damage settings, isolated the table lock:
 The fixed run still had individual long frames, so these results establish the
 fence-stall improvement, not a smooth-gameplay guarantee or an overall FPS gain.
 The PC app was closed after each test; temporary cheats, input, settings and saves
-were restored. Console verification remains pending.
+were restored. Xbox combat verification remains pending.
+
+Xbox package `1.0.26290.18` contains the fix from `da3849a`. Installation and the
+memory/concurrency contract passed on Series X, including the queued-writer
+test and 8,242 swap integrity checks with zero corruption. A screenshot confirmed
+the normal launcher opens. Graphics settings matched their pre-update hash,
+boot mode was restored, scripted input was empty, and the app was verified stopped
+after testing. This update does not change shader or pipeline cache formats.
 
 ## Files and privacy
 
