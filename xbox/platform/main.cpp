@@ -6,19 +6,25 @@
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.Gaming.Input.h>
+#include <winrt/Windows.UI.Popups.h>
 #include <windows.h>
 #include <unknwn.h>
 #include <gamingdeviceinformation.h>
 #include <fileapifromapp.h>
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <io.h>
 #include <fstream>
+#include <future>
+#include <memory>
 #include <string>
 #include <thread>
 #include <atomic>
 #include <vector>
 #include <utility>
+#include "prepare_game.h"
 
 extern "C" int gow3_probe_main(int argc,char **argv);
 extern "C" FILE *gow3_uwp_fopen(const char *path,const char *mode);
@@ -38,11 +44,12 @@ extern "C" uint64_t gow3_uwp_app_memory_limit() {
     auto actual=winrt::Windows::System::MemoryManager::AppMemoryUsageLimit();
     return memory_limit_override ? std::min(memory_limit_override,actual) : actual;
 }
+static winrt::agile_ref<winrt::Windows::UI::Core::CoreWindow> core_window;
+static std::atomic<bool> window_closed{false};
 #ifdef GOW3_BUILD_GRAPHICS
 #include "../graphics/present_bridge.h"
 #include "../graphics/overlay.h"
 #include "input.h"
-static winrt::agile_ref<winrt::Windows::UI::Core::CoreWindow> core_window;
 extern "C" IUnknown* gow3_uwp_core_window() {
     auto window=core_window.get();
     void* result=nullptr;
@@ -50,6 +57,156 @@ extern "C" IUnknown* gow3_uwp_core_window() {
     return reinterpret_cast<IUnknown*>(result);
 }
 #endif
+
+// The normal program exit would run static destructors and DLL teardown while the game's threads
+// still run, and during gameplay that hung for minutes with the last frame on screen.
+[[noreturn]] static void exit_now(const char* reason) {
+    if(!finished.load()) std::printf("UWP lifecycle: exiting (%s)\n",reason);
+    std::fflush(nullptr);
+    TerminateProcess(GetCurrentProcess(),0);
+    for(;;) Sleep(INFINITE);
+}
+// Closes the app the way closing its window does; ends the process if the window is still open after 3 s.
+[[noreturn]] static void close_app(const char* reason) {
+    core_window.get().Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::High,[] {
+        winrt::Windows::ApplicationModel::Core::CoreApplication::Exit();
+    });
+    for(int wait=0;wait<12&&!window_closed;++wait) Sleep(250);
+    exit_now(window_closed ? "window closed" : reason);
+}
+
+// A system dialog for the player, which the controller operates: the index of the chosen button, -1 when it
+// could not be shown. The last button is the one B (Escape) chooses.
+static int ask(std::string const& text,std::vector<std::string> const& buttons) {
+    std::printf("Player dialog: %s\n",text.c_str());
+    auto choice=std::make_shared<std::promise<int>>();
+    auto answer=choice->get_future();
+    core_window.get().Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,[text,buttons,choice] {
+        try {
+            winrt::Windows::UI::Popups::MessageDialog dialog(winrt::to_hstring(text),L"God of War III");
+            for(size_t i=0;i<buttons.size();++i)
+                dialog.Commands().Append(winrt::Windows::UI::Popups::UICommand(winrt::to_hstring(buttons[i]),nullptr,winrt::box_value(int(i))));
+            dialog.DefaultCommandIndex(0);
+            dialog.CancelCommandIndex(uint32_t(buttons.size()-1));
+            dialog.ShowAsync().Completed([choice](auto const& operation,winrt::Windows::Foundation::AsyncStatus status) {
+                int index=-1;
+                try {
+                    if(status==winrt::Windows::Foundation::AsyncStatus::Completed)
+                        if(auto command=operation.GetResults()) index=winrt::unbox_value<int>(command.Id());
+                } catch(winrt::hresult_error const&) {}
+                choice->set_value(index);
+            });
+        } catch(winrt::hresult_error const& error) {
+            std::printf("Player dialog failed: 0x%08x\n",static_cast<unsigned>(error.code()));
+            choice->set_value(-1);
+        }
+    });
+    int index=answer.get();
+    std::printf("Player choice: %d\n",index);
+    return index;
+}
+// Players see the message and the app closes; developers (run.txt) find it in loader.log.
+static void stop(std::string const& message,bool player) {
+    std::printf("STOP: %s\n",message.c_str());
+    if(!player) return;
+    ask(message,{"OK"});
+    close_app("closed after a message");
+}
+
+// The player's dump: the folder \dumps\GodOfWar3 on a USB drive.
+static std::string find_dump() {
+    std::vector<std::string> roots;
+    try {
+        for(auto const& drive:winrt::Windows::Storage::KnownFolders::RemovableDevices().GetFoldersAsync().get()) {
+            auto root=winrt::to_string(drive.Path());
+            if(!root.empty()) roots.push_back(root);
+        }
+    } catch(winrt::hresult_error const& error) {
+        std::printf("USB drive list failed: 0x%08x\n",static_cast<unsigned>(error.code()));
+    }
+    // The console names its first USB drive E:; it is tried when the list does not include it.
+    if(std::none_of(roots.begin(),roots.end(),[](std::string const& root) { return _strnicmp(root.c_str(),"E:",2)==0; }))
+        roots.push_back("E:\\");
+    for(auto root:roots) {
+        if(root.back()!='\\') root+='\\';
+        std::string dump=root+"dumps\\GodOfWar3";
+        FILE *probe=gow3_uwp_fopen((dump+"\\eboot.bin").c_str(),"rb");
+        std::printf("Game dump %s: %s\n",dump.c_str(),probe ? "found" : "not found");
+        if(probe) { std::fclose(probe); return dump; }
+    }
+    return {};
+}
+
+static bool read_file(std::string const& path,Gow3Prepare::Bytes& data) {
+    FILE *file=gow3_uwp_fopen(path.c_str(),"rb");
+    if(!file) return false;
+    data.clear();
+    std::vector<uint8_t> chunk(1<<20);
+    for(size_t count;(count=std::fread(chunk.data(),1,chunk.size(),file))>0;) data.insert(data.end(),chunk.begin(),chunk.begin()+count);
+    const bool ok=!std::ferror(file);
+    std::fclose(file);
+    return ok;
+}
+static bool write_file(std::string const& path,Gow3Prepare::Bytes const& data) {
+    FILE *file=gow3_uwp_fopen(path.c_str(),"wb");
+    if(!file) return false;
+    const bool ok=std::fwrite(data.data(),1,data.size(),file)==data.size();
+    return std::fclose(file)==0&&ok;
+}
+
+// The game files the launcher runs are made from the player's own dump and are never packaged: on the first
+// start into LocalState\Prepared, and again when the dump, the patch file or their format changes. Players are
+// asked first; developers (run.txt) get them without asking, and the prepare mode always makes them anew.
+static bool prepare_game(std::string const& dump,std::string const& prepared,bool player,bool always) {
+    Gow3Prepare::Dump files;
+    const std::pair<const char*,Gow3Prepare::Bytes*> inputs[]={{"eboot.bin",&files.eboot},
+        {"sce_module\\libc.prx",&files.libc},{"sce_module\\libSceFios2.prx",&files.fios},{"sce_sys\\param.sfo",&files.sfo}};
+    for(auto [name,data]:inputs) {
+        if(!read_file(dump+"\\"+name,*data)||data->empty()) {
+            stop("The game dump in "+dump+" is incomplete: "+name+" is missing or empty.\n\nCopy the whole dump to the USB drive again.",player);
+            return false;
+        }
+    }
+    Gow3Prepare::Bytes patch_file;
+    const std::string patch_path=winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path())+
+        "\\Patches\\God_of_War_III_Remastered.xml";
+    if(!read_file(patch_path,patch_file)) { stop("This app is incomplete: its patch file is missing. Install the app again.",player); return false; }
+    const std::string patches(patch_file.begin(),patch_file.end());
+    if(auto problem=Gow3Prepare::CheckTitle(files.sfo);!problem.empty()) { stop("The game dump in "+dump+" "+problem,player); return false; }
+    char marker[96];
+    std::snprintf(marker,sizeof marker,"gow3-uwp-prepared " GOW3_PREPARED_FORMAT "\nsource %016llx\n",
+                  static_cast<unsigned long long>(Gow3Prepare::Fingerprint(files,patches)));
+    const char* outputs[]={"boot-linked.bin","content.bin","patches-native.bin","patches-720p.bin"};
+    if(!always) {
+        Gow3Prepare::Bytes current;
+        bool ready=read_file(prepared+"\\format.txt",current)&&std::string(current.begin(),current.end())==marker;
+        for(auto name:outputs) {
+            FILE *probe=ready ? gow3_uwp_fopen((prepared+"\\"+name).c_str(),"rb") : nullptr;
+            ready=probe!=nullptr;
+            if(probe) std::fclose(probe);
+        }
+        if(ready) { std::printf("Prepared game files: %s\n",prepared.c_str()); return true; }
+    }
+    if(player&&ask("Game found: "+dump+"\n\nPrepare the game files? This is needed once and takes a few seconds.",{"Prepare","Cancel"})!=0)
+        close_app("game preparation declined");
+    std::printf("Preparing game files from %s\n",dump.c_str());
+    const auto started=std::chrono::steady_clock::now();
+    Gow3Prepare::Files result;
+    try { result=Gow3Prepare::Prepare(files,patches); }
+    catch(std::exception const& error) { stop(std::string("Preparing the game files failed: ")+error.what(),player); return false; }
+    DeleteFileFromAppW(winrt::to_hstring(prepared+"\\format.txt").c_str());
+    const std::pair<const char*,Gow3Prepare::Bytes const*> written[]={{"boot-linked.bin",&result.boot},{"content.bin",&result.content},
+        {"patches-native.bin",&result.patches_native},{"patches-720p.bin",&result.patches_720p}};
+    for(auto [name,data]:written) {
+        if(!write_file(prepared+"\\"+name,*data)) { stop(std::string("Writing the prepared game file ")+name+" failed.",player); return false; }
+    }
+    if(!write_file(prepared+"\\format.txt",Gow3Prepare::Bytes(marker,marker+std::strlen(marker)))) {
+        stop("Writing the prepared game files failed.",player); return false;
+    }
+    std::printf("Prepared game files in %lld ms: %s\n",static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now()-started).count()),prepared.c_str());
+    return true;
+}
 
 static void loader() {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -89,9 +246,12 @@ static void loader() {
     VirtualFree(code,0,MEM_RELEASE);
     std::printf("Executable System V ABI smoke: %s (%d)\n",smoke==42 ? "PASS" : "FAIL",smoke);
     if(smoke!=42) { finished=true; return; }
+    // Players have no run.txt: the game runs from their dump on the USB drive. Developers pick a test mode
+    // (line 1) and the dump folder (line 2) in it.
     std::ifstream settings(std::wstring(local)+L"\\run.txt");
-    std::string mode,dump;
-    std::getline(settings,mode); std::getline(settings,dump);
+    const bool player=!settings.is_open();
+    std::string mode=player ? "boot" : "",dump;
+    if(!player) { std::getline(settings,mode); std::getline(settings,dump); }
     if(!mode.empty()&&mode.back()=='\r') mode.pop_back();
     if(!dump.empty()&&dump.back()=='\r') dump.pop_back();
     std::ifstream debug_settings(std::wstring(local)+L"\\graphics-debug.txt");
@@ -117,6 +277,14 @@ static void loader() {
     }
     game_mode=(mode=="boot");
     _putenv_s("GOW3_UWP_LAUNCHER",mode=="boot" ? "1" : "0");
+    if(player) {
+        dump=find_dump();
+        if(dump.empty()) {
+            stop("No game dump found.\n\nCopy your God of War III Remastered dump (the folder with eboot.bin) to a USB drive "
+                 "as \\dumps\\GodOfWar3, connect the drive and start the app again.",true);
+            finished=true; return;
+        }
+    }
     _putenv_s("GOW3_PRECOMPILE_DUMP",dump.c_str());
     std::string user=winrt::to_string(local)+"\\user";
     CreateDirectoryW((std::wstring(local)+L"\\user").c_str(),nullptr);
@@ -134,8 +302,8 @@ static void loader() {
         int result=gow3_probe_main(2,args);
         std::printf("Memory contract self-test returned %d\n",result); finished=true; return;
     }
-    if(mode!="boot"&&mode!="imports"&&mode!="storage") {
-        std::puts("READY: upload run.txt (boot or imports on line 1, dump folder on line 2), then relaunch."); finished=true; return;
+    if(mode!="boot"&&mode!="imports"&&mode!="storage"&&mode!="prepare") {
+        std::puts("READY: upload run.txt (boot, imports, storage or prepare on line 1, dump folder on line 2), then relaunch."); finished=true; return;
     }
     if(dump.empty()) { std::puts("STOP: dump folder missing from run.txt"); finished=true; return; }
     if(mode=="storage") {
@@ -177,26 +345,8 @@ static void loader() {
         }
         finished=true; return;
     }
-    // The prepared game files are made from the player's own dump (scripts/prepare-game.ps1) and are never
-    // packaged: LocalState\Prepared (uploaded during development), else gow3-prepared next to the dump.
-    std::string prepared;
-    for(std::string candidate:{winrt::to_string(local)+"\\Prepared",dump+"\\gow3-prepared"}) {
-        if(FILE *probe=gow3_uwp_fopen((candidate+"\\boot-linked.bin").c_str(),"rb")) { std::fclose(probe); prepared=candidate; break; }
-    }
-    if(prepared.empty()) {
-        std::printf("STOP: prepared game files are missing from LocalState\\Prepared and %s\\gow3-prepared; "
-                    "run xbox/scripts/prepare-game.ps1 -Dump <dump folder>\n",dump.c_str());
-        finished=true; return;
-    }
-    char format[64]={};
-    if(FILE *marker=gow3_uwp_fopen((prepared+"\\format.txt").c_str(),"rb")) { std::fread(format,1,sizeof(format)-1,marker); std::fclose(marker); }
-    format[std::strcspn(format,"\r\n")]=0;
-    if(std::strcmp(format,"gow3-uwp-prepared " GOW3_PREPARED_FORMAT)) {
-        std::printf("STOP: %s holds prepared files of format '%s', this launcher needs 'gow3-uwp-prepared %s'; "
-                    "run xbox/scripts/prepare-game.ps1 again\n",prepared.c_str(),format,GOW3_PREPARED_FORMAT);
-        finished=true; return;
-    }
-    std::printf("Prepared game files: %s\n",prepared.c_str());
+    std::string prepared=winrt::to_string(local)+"\\Prepared";
+    if(!prepare_game(dump,prepared,player,mode=="prepare")||mode=="prepare") { finished=true; return; }
     std::string boot=prepared+"\\boot-linked.bin";
     std::string content=prepared+"\\content.bin";
     _putenv_s("GOW3_CONFIG",(user+"\\graphics.cfg").c_str());
@@ -251,7 +401,6 @@ static void loader() {
 
 struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFrameworkView> {
     winrt::Windows::UI::Core::CoreWindow window{nullptr};
-    std::atomic<bool> closed{false};
     void Initialize(winrt::Windows::ApplicationModel::Core::CoreApplicationView const& app) {
         app.Activated([this](auto const&,auto const&) { window.Activate(); });
         winrt::Windows::ApplicationModel::Core::CoreApplication::Suspending([](auto const&,auto const&) {
@@ -265,9 +414,9 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
         });
     }
     void SetWindow(winrt::Windows::UI::Core::CoreWindow const& value) {
-        window=value; window.Closed([this](auto const&,auto const&) {
+        window=value; window.Closed([](auto const&,auto const&) {
             if(!finished.load()) { std::puts("UWP lifecycle: window closed"); std::fflush(stdout); }
-            closed=true;
+            window_closed=true;
         });
         winrt::Windows::UI::Core::SystemNavigationManager::GetForCurrentView().BackRequested(
             [](auto const&,winrt::Windows::UI::Core::BackRequestedEventArgs const& event) {
@@ -288,9 +437,7 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
             if(gow3_uwp_dialog_key(uint32_t(event.VirtualKey()),0,0)) event.Handled(true);
         });
 #endif
-#ifdef GOW3_BUILD_GRAPHICS
         core_window=winrt::agile_ref(value);
-#endif
     }
     void Load(winrt::hstring const&) {}
     void Run() {
@@ -317,30 +464,17 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
         }).detach();
         // Scripts request a normal close through LocalState\quit.txt, the same path as closing the window,
         // instead of terminating the process (which leaves the window or the last frame on screen).
-        std::thread([this,dispatcher=window.Dispatcher(),
-                     quit=std::wstring(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())+L"\\quit.txt"] {
+        std::thread([quit=std::wstring(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())+L"\\quit.txt"] {
             winrt::init_apartment(winrt::apartment_type::multi_threaded);
             WIN32_FILE_ATTRIBUTE_DATA attributes{};
             DeleteFileFromAppW(quit.c_str());
             while(!GetFileAttributesExFromAppW(quit.c_str(),GetFileExInfoStandard,&attributes)) Sleep(250);
             DeleteFileFromAppW(quit.c_str());
             if(!finished.load()) { std::puts("UWP lifecycle: quit requested"); std::fflush(stdout); }
-            dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::High,[] {
-                winrt::Windows::ApplicationModel::Core::CoreApplication::Exit();
-            });
-            for(int wait=0;wait<12&&!closed;++wait) Sleep(250);
-            exit_now(closed ? "window closed" : "quit requested, window still open");
+            close_app("quit requested, window still open");
         }).detach();
-        while(!closed) window.Dispatcher().ProcessEvents(winrt::Windows::UI::Core::CoreProcessEventsOption::ProcessOneAndAllPending);
+        while(!window_closed) window.Dispatcher().ProcessEvents(winrt::Windows::UI::Core::CoreProcessEventsOption::ProcessOneAndAllPending);
         exit_now("window closed");
-    }
-    // The normal program exit would run static destructors and DLL teardown while the game's threads
-    // still run, and during gameplay that hung for minutes with the last frame on screen.
-    [[noreturn]] static void exit_now(const char* reason) {
-        if(!finished.load()) std::printf("UWP lifecycle: exiting (%s)\n",reason);
-        std::fflush(nullptr);
-        TerminateProcess(GetCurrentProcess(),0);
-        for(;;) Sleep(INFINITE);
     }
     void Uninitialize() {}
 };

@@ -223,17 +223,17 @@ after testing. This update does not change shader or pipeline cache formats.
   signed packages, PC logs, transfer receipts and raw Xbox results.
 - `settings.example.json`: generic local-settings schema. Actual paths stay in `.local/settings.json`.
 
-Packages contain no game code or assets: only the launcher, its libraries, Dozen and
-licenses. The launcher's prepared game files (the linked game code, content profile and
-graphics patches) are made from the player's own dump with
-`scripts/prepare-game.ps1 -Dump <app0 folder>`, which writes them to `gow3-prepared` next to
-the dump; preparing the dump on its USB drive once serves both PC and Xbox. At start the
-launcher loads them from `LocalState\Prepared` if present (development: `pc-smoke.ps1` copies
-`.local/prepared` there, `xbox-upload-prepared.ps1` uploads it to a console), otherwise from
-`<dump>\gow3-prepared`, and stops with a message naming both places when neither has them.
-`prepared-format.txt` versions the files; after a launcher update that raises it, the
-launcher asks for `prepare-game.ps1` to be run again. Signing keys remain in the local
-Windows certificate store.
+Packages contain no game code or assets: only the launcher, its libraries, Dozen, the
+graphics patch file (`patches/God_of_War_III_Remastered.xml`) and licenses. Players copy
+their own dump (the folder with `eboot.bin`) to a USB drive as `\dumps\GodOfWar3` and start
+the app; without `run.txt` it looks for that folder on the USB drives (E: as well when the
+system's list of removable drives does not name it) and says so in a dialog when it is
+missing. On the first start it asks to prepare the game files (the linked game code, content
+profile and graphics patches, `platform/prepare_game.cpp`) and writes them to
+`LocalState\Prepared`. `format.txt` there records `prepared-format.txt` and a fingerprint of
+the dump and patch file; when either changes, the app prepares them again. The Python
+scripts behind `scripts/prepare-game.ps1` remain the reference: the app's files match theirs
+byte for byte. Signing keys remain in the local Windows certificate store.
 
 The build depends on no other project. `scripts/fetch-deps.py` downloads every third-party
 library and tool at a pinned version from its upstream source, checks its SHA-256 and unpacks
@@ -277,7 +277,7 @@ On a fresh checkout, `scripts/setup.ps1 -PcDump <folder> [-XboxDump <folder>] [-
 refuses to overwrite an existing setup.
 
 ```powershell
-./xbox/scripts/build.ps1 -Prepare
+./xbox/scripts/build.ps1
 ./xbox/scripts/check-imports.ps1
 ./xbox/scripts/assets.ps1
 ./xbox/scripts/pc-smoke.ps1 -Register -Mode ready
@@ -286,12 +286,12 @@ refuses to overwrite an existing setup.
 ./xbox/scripts/package.ps1
 ```
 
-`-Prepare` runs `prepare-game.ps1` on the PC dump into `.local/prepared`; `pc-smoke.ps1` copies
-those files into the test package's `LocalState\Prepared`, and `xbox-upload-prepared.ps1
--Console <name> -App <full package name>` uploads them to a console after the app's first launch.
 `ready` runs the native-code smoke test; `imports` lists unresolved imports; `boot`
-attempts linked-module initialization and then the game's entry point. The package's
-LocalState `run.txt` selects a mode on line 1 and a dump folder on line 2. Logs are
+prepares the game files when needed (without asking), then runs linked-module
+initialization and the game's entry point; `prepare` always prepares them anew and stops.
+`prepare-game.ps1 -Dump <folder>` writes the Python reference files to `.local/prepared` for
+comparison. The package's LocalState `run.txt` selects a mode on line 1 and a dump folder on
+line 2; without it the app runs as players use it. Logs are
 `LocalState/loader.log` and `LocalState/errors.log`. They close when the worker finishes;
 startup failures that terminate the process also close them.
 

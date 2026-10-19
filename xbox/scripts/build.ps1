@@ -1,6 +1,6 @@
 #requires -Version 7.2
 [CmdletBinding()]
-param([switch]$Prepare,[switch]$Graphics)
+param([switch]$Graphics)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $repo=Split-Path $root -Parent
@@ -13,16 +13,10 @@ if($devPackage -and $devPackage.InstallLocation -and (Test-Path -LiteralPath $de
     if($how -ne 'not running') { Write-Output "Running test app stop: $how." }
 }
 $config=Get-Content -LiteralPath (Join-Path $local 'settings.json') -Raw | ConvertFrom-Json
-if($Prepare) {
-    & (Join-Path $PSScriptRoot 'prepare-game.ps1') -Dump $config.pc_dump -Out (Join-Path $local 'prepared') -Python $config.python
-    if($LASTEXITCODE) { throw 'Game preparation failed' }
-}
 if($Graphics -and !(Test-Path -LiteralPath (Join-Path $local 'deps/ffmpeg-install/lib/libavcodec.a'))) {
     & (Join-Path $PSScriptRoot 'build-deps.ps1') -Python $config.python
     if($LASTEXITCODE) { throw 'Building the dependencies failed' }
 }
-& $config.python (Join-Path $PSScriptRoot 'prepare-graphics.py') --out (Join-Path $local 'prepared')
-if($LASTEXITCODE) { throw 'UWP graphics patch preparation failed' }
 $vs=& "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
 & "$vs/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
 $env:PATH="$vs/VC/Tools/Llvm/x64/bin;$vs/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin;C:/Program Files/CMake/bin;C:/Program Files/Ninja;$env:PATH"

@@ -1,15 +1,14 @@
 #requires -Version 7.2
-# Prepares the launcher's game files from your own God of War III Remastered dump (CUSA01715 and the
-# other supported IDs). The launcher package contains no game code; it loads these files at run time,
-# from LocalState\Prepared or from the gow3-prepared folder next to the dump. The default output is
-# that folder, so preparing the dump on its USB drive once is enough for PC and Xbox.
+# Makes the launcher's game files from a God of War III Remastered dump with the Python reference
+# scripts. The app makes the same files itself on its first start (platform/prepare_game.cpp); this
+# script is for developers, to compare the two (pc-smoke.ps1 -Mode prepare writes the app's copy).
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$Dump,[string]$Out='',[string]$Python='python')
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $repo=Split-Path $root -Parent
 if(!(Test-Path -LiteralPath (Join-Path $Dump 'eboot.bin'))) { throw "$Dump does not contain eboot.bin; pass the game's app0 folder" }
-if(!$Out) { $Out=Join-Path $Dump 'gow3-prepared' }
+if(!$Out) { $Out=Join-Path $root '.local/prepared' }
 New-Item -ItemType Directory -Force $Out | Out-Null
 $marker=Join-Path $Out 'format.txt'
 if(Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker }

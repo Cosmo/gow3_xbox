@@ -1,6 +1,6 @@
 #requires -Version 7.2
 [CmdletBinding()]
-param([ValidateSet('ready','imports','boot','storage','memory','graphics','texture')][string]$Mode='ready',[ValidateRange(1,40)][int]$WaitSeconds=5,[switch]$Register,[switch]$Isolated,[ValidateSet('Gow3.Uwp.Dev','Gow3.Uwp.Smoke')][string]$PackageName='Gow3.Uwp.Dev')
+param([ValidateSet('ready','imports','boot','storage','prepare','memory','graphics','texture','player')][string]$Mode='ready',[ValidateRange(1,40)][int]$WaitSeconds=5,[switch]$Register,[switch]$Isolated,[ValidateSet('Gow3.Uwp.Dev','Gow3.Uwp.Smoke')][string]$PackageName='Gow3.Uwp.Dev')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'Gow3.Desktop.ps1')
 $root=Split-Path $PSScriptRoot -Parent
@@ -20,7 +20,7 @@ if($Isolated) {
     $sourceLayout=$layout
     $layout=Join-Path $root '.local/pc-layout'
     New-Item -ItemType Directory -Force $layout | Out-Null
-    foreach($name in @('AppxManifest.xml','gow3_uwp.exe','libwinpthread-1.dll','vulkan_dzn.dll','dxil.dll','Assets','ThirdParty')) {
+    foreach($name in @('AppxManifest.xml','gow3_uwp.exe','libwinpthread-1.dll','vulkan_dzn.dll','dxil.dll','Assets','Patches','ThirdParty')) {
         Copy-Item -LiteralPath (Join-Path $sourceLayout $name) -Destination $layout -Recurse -Force
     }
     $symbols=Join-Path $root '.local/build/gow3_uwp.pdb'
@@ -40,20 +40,9 @@ if(!$package) { throw 'Register the development layout first using -Register' }
 $state=Join-Path $env:LOCALAPPDATA "Packages/$($package.PackageFamilyName)/LocalState"
 New-Item -ItemType Directory -Force $state | Out-Null
 $settings=Get-Content -LiteralPath (Join-Path $root '.local/settings.json') -Raw | ConvertFrom-Json
-[IO.File]::WriteAllText((Join-Path $state 'run.txt'),"$Mode`n$($settings.pc_dump)`n",[Text.UTF8Encoding]::new($false))
-# The package holds no game code: the development prepared files go to LocalState\Prepared.
-$prepared=Join-Path $root '.local/prepared'
-if(Test-Path -LiteralPath (Join-Path $prepared 'format.txt')) {
-    $target=Join-Path $state 'Prepared'
-    New-Item -ItemType Directory -Force $target | Out-Null
-    foreach($name in @('boot-linked.bin','content.bin','patches-native.bin','patches-720p.bin','format.txt')) {
-        $source=Get-Item -LiteralPath (Join-Path $prepared $name)
-        $copy=Get-Item -LiteralPath (Join-Path $target $name) -ErrorAction SilentlyContinue
-        if(!$copy -or $copy.Length -ne $source.Length -or $copy.LastWriteTimeUtc -ne $source.LastWriteTimeUtc) {
-            Copy-Item -LiteralPath $source.FullName -Destination $target -Force
-        }
-    }
-}
+# player: no run.txt, the app finds the dump on a USB drive and asks before preparing, as for players.
+if($Mode -eq 'player') { Remove-Item -LiteralPath (Join-Path $state 'run.txt') -ErrorAction SilentlyContinue }
+else { [IO.File]::WriteAllText((Join-Path $state 'run.txt'),"$Mode`n$($settings.pc_dump)`n",[Text.UTF8Encoding]::new($false)) }
 if(!('Gow3Activation' -as [type])) {
 Add-Type @'
 using System;
@@ -122,6 +111,6 @@ if(Test-Path -LiteralPath $errorLog) {
     } finally { $reader.Dispose() }
     Get-Content -LiteralPath $destination.Replace('.log','-errors.log') -Tail 15
 }
-if($Mode -ne 'boot') {
+if($Mode -notin 'boot','player') {
     Write-Output "Test app stop: $(Stop-Gow3DesktopApp $package)."
 }

@@ -11,7 +11,7 @@ $sdk=Join-Path $env:WindowsSdkVerBinPath 'x64'
 $out=Join-Path $local ('packages/'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))
 $stage=Join-Path $out 'layout'
 New-Item -ItemType Directory -Force $stage | Out-Null
-foreach($name in @('AppxManifest.xml','gow3_uwp.exe','libwinpthread-1.dll','Assets','ThirdParty')) {
+foreach($name in @('AppxManifest.xml','gow3_uwp.exe','libwinpthread-1.dll','Assets','Patches','ThirdParty')) {
     Copy-Item -LiteralPath (Join-Path $layout $name) -Destination $stage -Recurse
 }
 foreach($name in @('vulkan_dzn.dll','dxil.dll')) {
