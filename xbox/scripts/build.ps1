@@ -5,10 +5,11 @@ $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $repo=Split-Path $root -Parent
 $local=Join-Path $root '.local'
-foreach($process in @(Get-Process | Where-Object ProcessName -Like 'gow3_uwp*')) {
-    if($process.Path -eq (Join-Path $local 'build/layout/gow3_uwp.exe')) {
-        Stop-Process -Id $process.Id -ErrorAction SilentlyContinue; $process.WaitForExit(5000) | Out-Null
-    }
+. (Join-Path $PSScriptRoot 'Gow3.Desktop.ps1')
+$devPackage=Get-AppxPackage -Name 'Gow3.Uwp.Dev'
+if($devPackage -and [IO.Path]::GetFullPath($devPackage.InstallLocation) -eq [IO.Path]::GetFullPath((Join-Path $local 'build/layout'))) {
+    $how=Stop-Gow3DesktopApp $devPackage
+    if($how -ne 'not running') { Write-Output "Running test app stop: $how." }
 }
 $config=Get-Content -LiteralPath (Join-Path $local 'settings.json') -Raw | ConvertFrom-Json
 if($Prepare) {

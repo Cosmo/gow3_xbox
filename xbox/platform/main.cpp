@@ -245,7 +245,10 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
         });
     }
     void SetWindow(winrt::Windows::UI::Core::CoreWindow const& value) {
-        window=value; window.Closed([this](auto const&,auto const&) { closed=true; });
+        window=value; window.Closed([this](auto const&,auto const&) {
+            if(!finished.load()) { std::puts("UWP lifecycle: window closed"); std::fflush(stdout); }
+            closed=true;
+        });
         winrt::Windows::UI::Core::SystemNavigationManager::GetForCurrentView().BackRequested(
             [](auto const&,winrt::Windows::UI::Core::BackRequestedEventArgs const& event) {
                 event.Handled(true);
@@ -291,6 +294,20 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
                     std::fputs("STOP: 30 second milestone watchdog\n",stderr); std::fflush(nullptr); ExitProcess(124);
                 }
             }
+        }).detach();
+        // Scripts request a normal close through LocalState\quit.txt, the same path as closing the window,
+        // instead of terminating the process (which leaves the window or the last frame on screen).
+        std::thread([dispatcher=window.Dispatcher(),
+                     quit=std::wstring(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())+L"\\quit.txt"] {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            WIN32_FILE_ATTRIBUTE_DATA attributes{};
+            DeleteFileFromAppW(quit.c_str());
+            while(!GetFileAttributesExFromAppW(quit.c_str(),GetFileExInfoStandard,&attributes)) Sleep(250);
+            DeleteFileFromAppW(quit.c_str());
+            if(!finished.load()) { std::puts("UWP lifecycle: quit requested"); std::fflush(stdout); }
+            dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,[] {
+                winrt::Windows::ApplicationModel::Core::CoreApplication::Exit();
+            });
         }).detach();
         while(!closed) window.Dispatcher().ProcessEvents(winrt::Windows::UI::Core::CoreProcessEventsOption::ProcessOneAndAllPending);
     }

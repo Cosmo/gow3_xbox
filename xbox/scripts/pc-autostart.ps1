@@ -7,6 +7,7 @@ param(
     [switch]$StopAfter
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'Gow3.Desktop.ps1')
 $package=Get-AppxPackage -Name $PackageName
 if(!$package) { throw "Package $PackageName is not registered" }
 $controls=Join-Path $env:LOCALAPPDATA "Packages/$($package.PackageFamilyName)/LocalState/controls.txt"
@@ -49,9 +50,6 @@ try {
     }
 } finally {
     [IO.File]::WriteAllText($controls,'',$encoding)
-    if($StopAfter -and !$game.HasExited) {
-        Stop-Process -Id $game.Id
-        $game.WaitForExit(5000) | Out-Null
-    }
+    if($StopAfter) { Write-Output "Test app stop: $(Stop-Gow3DesktopApp $package)." }
 }
 Write-Output 'Automatic input finished; all scripted buttons released.'

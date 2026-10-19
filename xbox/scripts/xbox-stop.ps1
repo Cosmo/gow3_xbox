@@ -15,6 +15,24 @@ Invoke-XboxCommand 'stop' $Json {
     $before=(Invoke-XboxRequest $portal GET '/api/resourcemanager/processes').data
     if(!$before -or !$before.ContainsKey('Processes')) { Stop-XboxCommand 'Cannot inspect processes before stopping the app.' 3 }
     $knownIds=@($before.Processes | Where-Object { $_.ContainsKey('PackageFullName') -and $_.PackageFullName -eq $package.PackageFullName } | ForEach-Object { $_.ProcessId })
+    $isRunning={
+        $current=(Invoke-XboxRequest $portal GET '/api/resourcemanager/processes').data
+        @($current.Processes | Where-Object { (($_.ContainsKey('PackageFullName') -and $_.PackageFullName -eq $package.PackageFullName) -or
+            ($_.ContainsKey('ProcessId') -and $knownIds -contains $_.ProcessId)) -and (!$_.ContainsKey('IsRunning') -or $_.IsRunning) }).Count -gt 0
+    }
+    # Ask the app to close itself (LocalState\quit.txt, the same path as closing its window). Terminating the
+    # process instead leaves its last frame on screen until the system finishes tearing it down.
+    if(& $isRunning) {
+        $quitFile=Join-Path (Split-Path $PSScriptRoot -Parent) '.local/transfers/quit.txt'
+        New-Item -ItemType Directory -Force (Split-Path $quitFile) | Out-Null
+        [IO.File]::WriteAllText($quitFile,'')
+        $query=Get-XboxFileQuery $package 'LocalState/quit.txt'
+        $query.extract='false'
+        $null=Invoke-XboxRequest $portal POST '/api/filesystem/apps/file' $query (New-XboxMultipart @($quitFile) @($query.filename)) @(200,201,204)
+        $quitDeadline=[DateTime]::UtcNow.AddSeconds([Math]::Min(30,$TimeoutSeconds))
+        while((& $isRunning) -and [DateTime]::UtcNow -lt $quitDeadline) { Start-Sleep -Milliseconds 500 }
+        if(!(& $isRunning)) { return @{stopped_observed=$true; closed_by_app=$true; package=$package.PackageFullName} }
+    }
     foreach($processId in $knownIds) {
         $current=(Invoke-XboxRequest $portal GET '/api/resourcemanager/processes').data
         $selected=@($current.Processes | Where-Object { $_.ProcessId -eq $processId -and $_.PackageFullName -eq $package.PackageFullName })

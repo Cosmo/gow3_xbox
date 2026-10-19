@@ -2,19 +2,18 @@
 [CmdletBinding()]
 param([ValidateSet('ready','imports','boot','storage','memory','graphics','texture')][string]$Mode='ready',[ValidateRange(1,40)][int]$WaitSeconds=5,[switch]$Register,[switch]$Isolated,[ValidateSet('Gow3.Uwp.Dev','Gow3.Uwp.Smoke')][string]$PackageName='Gow3.Uwp.Dev')
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'Gow3.Desktop.ps1')
 $root=Split-Path $PSScriptRoot -Parent
 $layout=Join-Path $root '.local/build/layout'
 if($PackageName -eq 'Gow3.Uwp.Smoke') { $layout=Join-Path $root '.local/pc-layout' }
-$targetLayout=if($Isolated) { Join-Path $root '.local/pc-layout' } else { $layout }
-$targetExe=[IO.Path]::GetFullPath((Join-Path $targetLayout 'gow3_uwp.exe'))
 $testExes=@(
     [IO.Path]::GetFullPath((Join-Path $root '.local/build/layout/gow3_uwp.exe')),
     [IO.Path]::GetFullPath((Join-Path $root '.local/pc-layout/gow3_uwp.exe'))
 )
-foreach($process in @(Get-Process | Where-Object ProcessName -Like 'gow3_uwp*')) {
-    if($process.Path -and [IO.Path]::GetFullPath($process.Path) -in $testExes) {
-        Stop-Process -Id $process.Id -ErrorAction Stop
-        if(!$process.WaitForExit(5000)) { throw 'The previous desktop test process did not exit' }
+foreach($testPackage in @(Get-AppxPackage -Name 'Gow3.Uwp.Dev'; Get-AppxPackage -Name 'Gow3.Uwp.Smoke')) {
+    if([IO.Path]::GetFullPath((Join-Path $testPackage.InstallLocation 'gow3_uwp.exe')) -in $testExes) {
+        $how=Stop-Gow3DesktopApp $testPackage
+        if($how -ne 'not running') { Write-Output "Previous test app ($($testPackage.Name)) stop: $how." }
     }
 }
 if($Isolated) {
@@ -108,9 +107,5 @@ if(Test-Path -LiteralPath $errorLog) {
     Get-Content -LiteralPath $destination.Replace('.log','-errors.log') -Tail 15
 }
 if($Mode -ne 'boot') {
-    $process=Get-Process -Id $pidValue -ErrorAction SilentlyContinue
-    if($process -and $process.Path -eq $targetExe) {
-        Stop-Process -Id $pidValue
-        $process.WaitForExit(5000) | Out-Null
-    }
+    Write-Output "Test app stop: $(Stop-Gow3DesktopApp $package)."
 }
