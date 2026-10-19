@@ -17,6 +17,8 @@ set(CMAKE_CXX_STANDARD_LIBRARIES "${CMAKE_CXX_STANDARD_LIBRARIES_INIT}")
 set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
 set(FMT_DOC OFF CACHE BOOL "" FORCE)
 set(FMT_TEST OFF CACHE BOOL "" FORCE)
+# fmt builds a C++20 module with Ninja 1.11+, which clang-cl cannot scan; the launcher uses the headers.
+set(FMT_MODULE OFF CACHE BOOL "" FORCE)
 add_subdirectory("${gow3_deps}/fmt" "${CMAKE_BINARY_DIR}/deps/fmt" EXCLUDE_FROM_ALL)
 
 set(ZYAN_ZYCORE_PATH "${gow3_deps}/zycore" CACHE PATH "" FORCE)
