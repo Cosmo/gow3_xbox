@@ -227,10 +227,12 @@ Development packages contain private, dump-derived prepared executable code. The
 local test artifacts, not redistributable releases. Neither prepared code nor full game
 assets are committed. Signing keys remain in the local Windows certificate store.
 
-XboxResearch is a read-only reference. The console operations are adapted from its shared
-scripts; this project's copies keep transfers and results under `.local/`. Dependency
-copies include winpthread's license. Build and console operations do not write into the
-reference project and do not require its scripts at runtime.
+The build depends on no other project. `scripts/fetch-deps.py` downloads every third-party
+library and tool at a pinned version from its upstream source, checks its SHA-256 and unpacks
+it into `.local/deps` with its license; `scripts/build-deps.ps1` also builds glslang and a
+static LGPL FFmpeg 7.1.1 limited to the codecs and demuxers the game uses (clang-cl through
+MSYS2, which must be installed at `C:\msys64` or `-Msys2`). The console scripts keep transfers
+and results under `.local/`.
 
 ## Milestone 2: original game entry and sparse memory
 
@@ -259,10 +261,12 @@ guest writes during that window need the renderer's coherence policy to be check
 ## Reproduce locally
 
 PowerShell 7.2+, Visual Studio C++ tools with clang-cl, a Windows SDK, CMake 3.20+,
-Ninja and Python are required. Existing setup is stored in ignored `.local/`.
-On a fresh checkout, `scripts/setup.ps1` accepts explicit `ResearchRoot`, `PcDump`,
-`XboxDump` and `Python` paths and copies only the required local dependency files and
-selected console configuration. It refuses to overwrite an existing setup.
+Ninja, Python and MSYS2 are required. Existing setup is stored in ignored `.local/`.
+On a fresh checkout, `scripts/setup.ps1 -PcDump <folder> [-XboxDump <folder>] [-Python <exe>]
+[-MesaRoot <folder>]` writes `.local/settings.json`, creates `.local/devices.json` from
+`devices.example.json` (set the console address there; credentials come from the
+`XBOX_USERNAME`/`XBOX_PASSWORD` environment variables) and builds the dependencies. It
+refuses to overwrite an existing setup.
 
 ```powershell
 ./xbox/scripts/build.ps1 -Prepare
@@ -288,9 +292,9 @@ refuse existing files unless `-Overwrite` is supplied. Each retained download re
 
 ## Next milestones
 
-Graphics build: set `research_root` and `mesa_root` in ignored `.local/settings.json`,
-fetch the pinned headers with `xbox/scripts/boost-headers.py`, then run
-`build.ps1 -Graphics`. `pc-smoke.ps1 -Mode graphics` checks the packaged Dozen driver,
+Graphics build: set `mesa_root` (the Dozen fork's workspace) in ignored
+`.local/settings.json`, then run `build.ps1 -Graphics`; it builds the dependencies first
+when they are missing. `pc-smoke.ps1 -Mode graphics` checks the packaged Dozen driver,
 a Vulkan clear, exported D3D12 image, and native CoreWindow presentation. The same
 test passed on Series X and its displayed blue frame was verified by screenshot.
 The frame stays visible until the app closes. This is a host graphics test, not gameplay.

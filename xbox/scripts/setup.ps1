@@ -1,27 +1,20 @@
 #requires -Version 7.2
+# Creates the ignored local settings (.local/settings.json) and, if missing, a console list from
+# devices.example.json, then fetches and builds the pinned third-party dependencies.
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$ResearchRoot,[Parameter(Mandatory)][string]$PcDump,
-      [Parameter(Mandatory)][string]$XboxDump,[Parameter(Mandatory)][string]$Python,
-      [string]$Console='series-x')
+param([Parameter(Mandatory)][string]$PcDump,[string]$XboxDump='',[string]$Python='python',[string]$MesaRoot='')
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $local=Join-Path $root '.local'
-if(Test-Path -LiteralPath (Join-Path $local 'settings.json')) { throw 'Local setup already exists; edit ignored settings.json deliberately instead of overwriting it' }
-$source=Join-Path $ResearchRoot '.local/kyty-on-jetsku/3rdparty/winpthread'
-$dependency=Join-Path $local 'deps/winpthread'
-New-Item -ItemType Directory -Force (Join-Path $dependency 'include'),(Join-Path $dependency 'lib') | Out-Null
-foreach($file in @('pthread.h','pthread_compat.h','pthread_time.h','pthread_signal.h','pthread_unistd.h','sched.h')) {
-    Copy-Item -LiteralPath (Join-Path $source "include/$file") -Destination (Join-Path $dependency 'include')
+New-Item -ItemType Directory -Force $local | Out-Null
+$settings=Join-Path $local 'settings.json'
+if(Test-Path -LiteralPath $settings) { throw 'Local setup already exists; edit .local/settings.json deliberately instead of overwriting it' }
+@{pc_dump=$PcDump; xbox_dump=$XboxDump; python=$Python; mesa_root=$MesaRoot} | ConvertTo-Json | Set-Content -LiteralPath $settings
+$devices=Join-Path $local 'devices.json'
+if(!(Test-Path -LiteralPath $devices)) {
+    Copy-Item -LiteralPath (Join-Path $root 'devices.example.json') -Destination $devices
+    Write-Output 'Console list created from devices.example.json; set your console address in .local/devices.json.'
 }
-Copy-Item -LiteralPath (Join-Path $source 'lib/libwinpthread.dll.a') -Destination (Join-Path $dependency 'lib')
-Copy-Item -LiteralPath (Join-Path $source 'COPYING') -Destination $dependency
-Copy-Item -LiteralPath (Join-Path $ResearchRoot '.local/deps/winpthread-ucrt/libwinpthread-1.dll') -Destination $dependency
-$devices=Get-Content -LiteralPath (Join-Path $ResearchRoot 'devices.json') -Raw | ConvertFrom-Json -AsHashtable
-if(!$devices.ContainsKey($Console)) { throw 'The requested console configuration does not exist in the reference project' }
-$device=$devices[$Console]
-if($device.auth -eq 'credential') {
-    Copy-Item -LiteralPath (Join-Path $ResearchRoot ".local/$($device.credential_file)") -Destination $local
-}
-@{$Console=$device} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $local 'devices.json')
-@{pc_dump=$PcDump; xbox_dump=$XboxDump; python=$Python} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $local 'settings.json')
-Write-Output 'Private local setup created. The reference project was only read.'
+& (Join-Path $PSScriptRoot 'build-deps.ps1') -Python $Python
+if($LASTEXITCODE) { throw 'Building the dependencies failed' }
+Write-Output 'Private local setup created.'

@@ -1,0 +1,9 @@
+{
+  "series-x": {
+    "url": "https://192.168.0.2:11443/",
+    "auth": "environment",
+    "username_env": "XBOX_USERNAME",
+    "password_env": "XBOX_PASSWORD",
+    "insecure_tls": true
+  }
+}

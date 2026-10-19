@@ -27,7 +27,10 @@ if($Isolated) {
     if(Test-Path -LiteralPath $symbols) { Copy-Item -LiteralPath $symbols -Destination $layout -Force }
     $packageName='Gow3.Uwp.Smoke'
     $manifest=Join-Path $layout 'AppxManifest.xml'
-    $xml=[IO.File]::ReadAllText($manifest).Replace('Name="Gow3.Uwp.Dev"','Name="Gow3.Uwp.Smoke"')
+    # A rising version (as package.ps1 uses) so registering never fails against a newer test package.
+    $now=[DateTime]::UtcNow
+    $version='1.0.{0}.{1}' -f ($now.Year%100*1000+$now.DayOfYear),([int]$now.ToString('HHmm'))
+    $xml=[IO.File]::ReadAllText($manifest).Replace('Name="Gow3.Uwp.Dev"','Name="Gow3.Uwp.Smoke"').Replace('Version="1.0.0.0"',"Version=`"$version`"")
     [IO.File]::WriteAllText($manifest,$xml,[Text.UTF8Encoding]::new($false))
     $Register=$true
 }

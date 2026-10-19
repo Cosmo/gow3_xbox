@@ -11,7 +11,10 @@ if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
   message(FATAL_ERROR "Use clang-cl: guest code uses the System V x64 ABI")
 endif()
 set(GOW3_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
-set(GOW3_PTHREAD "${CMAKE_CURRENT_LIST_DIR}/.local/deps/winpthread" CACHE PATH "UCRT winpthread files")
+set(GOW3_DEPS_ROOT "${CMAKE_CURRENT_LIST_DIR}/.local/deps" CACHE PATH "Pinned third-party dependencies (scripts/build-deps.ps1)")
+set(GOW3_PTHREAD "${GOW3_DEPS_ROOT}/winpthreads" CACHE PATH "UCRT winpthread headers and import library")
+# platform/compat/unistd.h owns mode_t; winpthreads 14 would declare its own, narrower one.
+add_compile_definitions(_MODE_T_)
 set(GOW3_PREPARED "${CMAKE_CURRENT_LIST_DIR}/.local/prepared" CACHE PATH "Prepared guest image")
 set(GOW3_UWP_SOURCES
   runtime runtime_content runtime_file runtime_kernel runtime_memory runtime_mutex
@@ -47,7 +50,7 @@ if(GOW3_BUILD_GRAPHICS)
     target_sources(gow3_uwp PRIVATE platform/input.cpp platform/audio.cpp "${GOW3_ROOT}/src/runtime_pad.c"
       "${GOW3_ROOT}/src/runtime_audio.c" "${GOW3_ROOT}/src/runtime_ajm.c"
       "${GOW3_ROOT}/src/runtime_mp3.c" "${GOW3_ROOT}/src/runtime_videodec.c"
-      "${GOW3_REFERENCE_ROOT}/.local/kyty-on-jetsku/src/uwp/src/desktopShims.cpp")
+      platform/desktop_shims.cpp)
     file(GLOB GOW3_ATRAC9 "${GOW3_ROOT}/third_party/LibAtrac9/C/src/*.c")
     add_library(gow3_atrac9 STATIC ${GOW3_ATRAC9})
     set_source_files_properties("${GOW3_ROOT}/src/runtime_ajm.c" PROPERTIES COMPILE_DEFINITIONS COMPILING_DLL)
@@ -65,8 +68,8 @@ endif()
 add_custom_command(TARGET gow3_uwp POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "${GOW3_LAYOUT}/Assets" "${GOW3_LAYOUT}/Prepared" "${GOW3_LAYOUT}/ThirdParty"
   COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:gow3_uwp>" "${GOW3_LAYOUT}"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GOW3_PTHREAD}/libwinpthread-1.dll" "${GOW3_LAYOUT}"
-  COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_PTHREAD}/COPYING" "${GOW3_LAYOUT}/ThirdParty/winpthread-COPYING.txt"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GOW3_DEPS_ROOT}/libwinpthread/bin/libwinpthread-1.dll" "${GOW3_LAYOUT}"
+  COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_PTHREAD}/share/licenses/winpthreads/COPYING" "${GOW3_LAYOUT}/ThirdParty/winpthread-COPYING.txt"
   COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_LIST_DIR}/AppxManifest.xml" "${GOW3_LAYOUT}"
   COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_PREPARED}/boot-linked.bin" "${GOW3_PREPARED}/content.bin"
     "${GOW3_PREPARED}/patches-native.bin" "${GOW3_PREPARED}/patches-720p.bin" "${GOW3_LAYOUT}/Prepared")
