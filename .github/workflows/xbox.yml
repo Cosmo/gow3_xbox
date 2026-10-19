@@ -97,7 +97,9 @@ jobs:
         shell: pwsh
     steps:
       - name: Git settings
-        run: git config --global core.autocrlf false
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
 
       - name: Checkout repository
         uses: actions/checkout@v4

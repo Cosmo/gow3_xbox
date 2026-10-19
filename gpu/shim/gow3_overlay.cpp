@@ -849,11 +849,14 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
             auto& loader=*static_cast<LoaderContext*>(user);
             auto proc=VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(loader.device,name);
             if(!proc) proc=VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr(loader.instance,name);
-            if(!proc
 #ifdef GOW3_UWP
-                &&!std::strstr(name,"Surface")&&!std::strstr(name,"Swapchain")
+            // Dozen's UWP build has no surface or swapchain functions. The overlay draws into the presenter's
+            // images and never uses imgui's window helpers, but imgui refuses to start with any function missing.
+            if(!proc&&(std::strstr(name,"Surface")||std::strstr(name,"Swapchain")))
+                return reinterpret_cast<PFN_vkVoidFunction>(+[] {
+                    std::fputs("Overlay: imgui called a Vulkan window helper, which UWP lacks\n",stderr); std::abort(); });
 #endif
-            ) std::fprintf(stderr,"Overlay: Vulkan function unavailable: %s\n",name);
+            if(!proc) std::fprintf(stderr,"Overlay: Vulkan function unavailable: %s\n",name);
             return proc;
         },
         &loader);
