@@ -1,16 +1,16 @@
 #requires -Version 7.2
 [CmdletBinding()]
-param([ValidateSet('ready','imports','boot','storage','prepare','memory','graphics','texture','player')][string]$Mode='ready',[ValidateRange(1,40)][int]$WaitSeconds=5,[switch]$Register,[switch]$Isolated,[ValidateSet('Gow3.Uwp.Dev','Gow3.Uwp.Smoke')][string]$PackageName='Gow3.Uwp.Dev')
+param([ValidateSet('ready','imports','boot','storage','prepare','memory','graphics','texture','player')][string]$Mode='ready',[ValidateRange(1,40)][int]$WaitSeconds=5,[switch]$Register,[switch]$Isolated,[ValidateSet('GodOfWar3Launcher','GodOfWar3Launcher.Test')][string]$PackageName='GodOfWar3Launcher')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'Gow3.Desktop.ps1')
 $root=Split-Path $PSScriptRoot -Parent
 $layout=Join-Path $root '.local/build/layout'
-if($PackageName -eq 'Gow3.Uwp.Smoke') { $layout=Join-Path $root '.local/pc-layout' }
+if($PackageName -eq 'GodOfWar3Launcher.Test') { $layout=Join-Path $root '.local/pc-layout' }
 $testExes=@(
     [IO.Path]::GetFullPath((Join-Path $root '.local/build/layout/gow3_uwp.exe')),
     [IO.Path]::GetFullPath((Join-Path $root '.local/pc-layout/gow3_uwp.exe'))
 )
-foreach($testPackage in @(Get-AppxPackage -Name 'Gow3.Uwp.Dev'; Get-AppxPackage -Name 'Gow3.Uwp.Smoke')) {
+foreach($testPackage in @(Get-AppxPackage -Name 'GodOfWar3Launcher'; Get-AppxPackage -Name 'GodOfWar3Launcher.Test')) {
     if([IO.Path]::GetFullPath((Join-Path $testPackage.InstallLocation 'gow3_uwp.exe')) -in $testExes) {
         $how=Stop-Gow3DesktopApp $testPackage
         if($how -ne 'not running') { Write-Output "Previous test app ($($testPackage.Name)) stop: $how." }
@@ -25,12 +25,12 @@ if($Isolated) {
     }
     $symbols=Join-Path $root '.local/build/gow3_uwp.pdb'
     if(Test-Path -LiteralPath $symbols) { Copy-Item -LiteralPath $symbols -Destination $layout -Force }
-    $packageName='Gow3.Uwp.Smoke'
+    $packageName='GodOfWar3Launcher.Test'
     $manifest=Join-Path $layout 'AppxManifest.xml'
     # A rising version (as package.ps1 uses) so registering never fails against a newer test package.
     $now=[DateTime]::UtcNow
     $version='1.0.{0}.{1}' -f ($now.Year%100*1000+$now.DayOfYear),([int]$now.ToString('HHmm'))
-    $xml=[IO.File]::ReadAllText($manifest).Replace('Name="Gow3.Uwp.Dev"','Name="Gow3.Uwp.Smoke"').Replace('Version="1.0.0.0"',"Version=`"$version`"")
+    $xml=[IO.File]::ReadAllText($manifest).Replace('Name="GodOfWar3Launcher"','Name="GodOfWar3Launcher.Test"').Replace('Version="1.0.0.0"',"Version=`"$version`"")
     [IO.File]::WriteAllText($manifest,$xml,[Text.UTF8Encoding]::new($false))
     $Register=$true
 }

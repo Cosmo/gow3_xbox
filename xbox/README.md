@@ -1,8 +1,29 @@
-# Xbox UWP port
+# God of War 3 Launcher for Xbox
 
-Target: Xbox Series X Developer Mode. The same development package runs on Windows PC
-for smoke testing. Initial priority is playable behavior; resolution and frame rate will
-follow measurements. Commit at meaningful working milestones, not individual edits.
+God of War III Remastered on the Xbox Series X|S in Developer Mode (not the Xbox One), built
+on gow3_pc and Dozen ([CREDITS.md](CREDITS.md)). The package contains no game files: it runs
+your own dump.
+
+## Testers
+
+1. Get the zip from the repository's Releases and unzip it on a PC.
+2. Device Portal → **Add** → the `.appx` and the package in `Dependencies`.
+3. Dev Home: set the app's type to **Game**.
+4. Copy your dump (the folder with `eboot.bin`, `sce_module`, `sce_sys` and `dvdroot_ps4`) to a
+   USB drive as `\dumps\GodOfWar3` and connect it to the Xbox.
+5. Start **God of War 3 Launcher**: **Prepare** (once), **Precompile shaders** (once,
+   recommended), then **Start game**.
+
+New builds install over earlier ones and keep the app's data. Packages are signed with
+`signing/gow3_xbox-signing.pfx`, a self-signed test key for `CN=gow3_xbox` that is public on
+purpose: it vouches for nobody, and with one shared key every build, from any machine or from
+GitHub, installs over the previous one. The Xbox in Developer Mode installs such packages.
+
+**Builds on GitHub**: `.github/workflows/xbox.yml` (Actions → Xbox build → Run workflow) builds
+Dozen from the Mesa fork, then the launcher and `GodOfWar3Launcher-<version>.zip`, and
+publishes it as a pre-release with the steps above.
+
+The rest of this file is the development log.
 
 ## Milestone 1 checkpoint: native loader
 
@@ -425,9 +446,9 @@ filtered by file type. A native open of the exact executable succeeds on the lat
 console run, while its WinRT broker lookup still reports access denied; permissions need
 validation for the remaining assets. See [Microsoft's file-access documentation](https://learn.microsoft.com/en-us/windows/uwp/files/file-access-permissions).
 
-`pc-smoke.ps1 -Isolated -Mode boot` registers a separate `Gow3.Uwp.Smoke` development
+`pc-smoke.ps1 -Isolated -Mode boot` registers a separate `GodOfWar3Launcher.Test` development
 layout if the primary PC package is stuck in servicing. Subsequent runs use
-`-PackageName Gow3.Uwp.Smoke`; the console retains its original package identity.
+`-PackageName GodOfWar3Launcher.Test`; the console retains its original package identity.
 
 `pc-smoke.ps1` closes either of this project's desktop test layouts before launching
 another. Diagnostic modes close after collecting their logs; `boot` stays open for

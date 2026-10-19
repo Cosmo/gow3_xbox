@@ -6,7 +6,7 @@ $root=Split-Path $PSScriptRoot -Parent
 $repo=Split-Path $root -Parent
 $local=Join-Path $root '.local'
 . (Join-Path $PSScriptRoot 'Gow3.Desktop.ps1')
-$devPackage=Get-AppxPackage -Name 'Gow3.Uwp.Dev'
+$devPackage=Get-AppxPackage -Name 'GodOfWar3Launcher'
 if($devPackage -and $devPackage.InstallLocation -and (Test-Path -LiteralPath $devPackage.InstallLocation) -and
    [IO.Path]::GetFullPath($devPackage.InstallLocation) -eq [IO.Path]::GetFullPath((Join-Path $local 'build/layout'))) {
     $how=Stop-Gow3DesktopApp $devPackage
@@ -21,7 +21,12 @@ $vs=& "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -
 & "$vs/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
 $env:PATH="$vs/VC/Tools/Llvm/x64/bin;$vs/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin;C:/Program Files/CMake/bin;C:/Program Files/Ninja;$env:PATH"
 $build=Join-Path $local 'build'
-& cmake -S $root -B $build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DGOW3_BUILD_GRAPHICS=$($Graphics.IsPresent)" "-DGOW3_MESA_ROOT=$($config.mesa_root)"
+# Dozen and DXC come from mesa_root (a local Mesa checkout), or from dozen_dll, mesa_license and dxc_root (the builds on GitHub).
+$options=@("-DGOW3_BUILD_GRAPHICS=$($Graphics.IsPresent)","-DGOW3_MESA_ROOT=$($config.mesa_root)")
+foreach($key in 'dozen_dll','mesa_license','dxc_root') {
+    if($config.PSObject.Properties[$key] -and $config.$key) { $options+="-DGOW3_$($key.ToUpper())=$($config.$key)" }
+}
+& cmake -S $root -B $build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=RelWithDebInfo @options
 if($LASTEXITCODE) { throw 'UWP configure failed' }
 & cmake --build $build --parallel 4 *> (Join-Path $local 'build.log')
 if($LASTEXITCODE) { Get-Content (Join-Path $local 'build.log') -Tail 35; throw 'UWP build failed; details in xbox/.local/build.log' }

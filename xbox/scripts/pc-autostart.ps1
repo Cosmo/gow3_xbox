@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1,600)][int]$Seconds=240,
-    [ValidateSet('Gow3.Uwp.Dev','Gow3.Uwp.Smoke')][string]$PackageName='Gow3.Uwp.Smoke',
+    [ValidateSet('GodOfWar3Launcher','GodOfWar3Launcher.Test')][string]$PackageName='GodOfWar3Launcher.Test',
     [switch]$Capture,
     [switch]$StopAfter
 )

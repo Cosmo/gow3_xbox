@@ -60,13 +60,39 @@ if(GOW3_BUILD_GRAPHICS)
     target_link_libraries(gow3_uwp PRIVATE gow3gpu gow3_atrac9 PkgConfig::SDL3 PkgConfig::FFMPEG xaudio2)
     target_compile_definitions(gow3gpu PRIVATE VK_USE_PLATFORM_WIN32_KHR)
   endif()
-  set(GOW3_DOZEN_ROOT "${GOW3_MESA_ROOT}/build/dozen-uwp")
+  # Dozen comes from the Mesa fork's UWP build (a local checkout, or its release on GitHub), dxil.dll from DXC.
+  set(GOW3_DOZEN_DLL "${GOW3_MESA_ROOT}/build/dozen-uwp/src/microsoft/vulkan/vulkan_dzn.dll" CACHE FILEPATH "Dozen built for UWP")
+  set(GOW3_MESA_LICENSE "${GOW3_MESA_ROOT}/mesa/licenses/MIT" CACHE FILEPATH "Mesa's MIT license")
+  set(GOW3_DXC_ROOT "${GOW3_MESA_ROOT}/tools/dxc" CACHE PATH "DirectX Shader Compiler release (bin/x64/dxil.dll and licenses)")
+  # The license of every library in the package (CREDITS.md lists them).
+  set(GOW3_LICENSE_COMMANDS)
+  foreach(entry IN ITEMS
+      "${GOW3_MESA_LICENSE}|Mesa-MIT.txt"
+      "${GOW3_DXC_ROOT}/LICENCE-MIT.txt|DXC-LICENCE-MIT.txt" "${GOW3_DXC_ROOT}/LICENSE-LLVM.txt|DXC-LICENSE-LLVM.txt"
+      "${GOW3_DXC_ROOT}/LICENSE-MS.txt|DXC-LICENSE-MS.txt"
+      "${GOW3_ROOT}/gpu/shadps4/LICENSE|shadPS4-GPL-2.0.txt"
+      "${GOW3_DEPS_ROOT}/licenses/ffmpeg.txt|FFmpeg-LGPL-2.1.txt" "${GOW3_DEPS_ROOT}/licenses/sdl.txt|SDL3-zlib.txt"
+      "${GOW3_DEPS_ROOT}/licenses/fmt.txt|fmt-MIT.txt" "${GOW3_DEPS_ROOT}/licenses/zydis.txt|Zydis-MIT.txt"
+      "${GOW3_DEPS_ROOT}/licenses/zycore.txt|Zycore-MIT.txt" "${GOW3_DEPS_ROOT}/licenses/xxhash.txt|xxHash-BSD-2.txt"
+      "${GOW3_DEPS_ROOT}/licenses/vma.txt|VulkanMemoryAllocator-MIT.txt"
+      "${GOW3_DEPS_ROOT}/licenses/vulkan-headers.txt|Vulkan-Headers.txt"
+      "${GOW3_DEPS_ROOT}/licenses/robin-map.txt|robin-map-MIT.txt" "${GOW3_DEPS_ROOT}/boost/licenses/config.txt|Boost-BSL-1.0.txt"
+      "${GOW3_ROOT}/third_party/LibAtrac9/LICENSE|LibAtrac9-MIT.txt" "${GOW3_ROOT}/gpu/third_party/imgui/LICENSE.txt|imgui-MIT.txt"
+      "${GOW3_ROOT}/gpu/third_party/miniz/LICENSE|miniz-MIT.txt" "${GOW3_ROOT}/gpu/third_party/magic_enum/LICENSE|magic_enum-MIT.txt"
+      "${GOW3_ROOT}/gpu/third_party/half/LICENSE.txt|half-MIT.txt" "${GOW3_ROOT}/gpu/third_party/sirit/LICENSE.txt|sirit-BSD-3.txt"
+      "${GOW3_ROOT}/gpu/third_party/xbyak/COPYRIGHT|xbyak-BSD-3.txt"
+      "${GOW3_ROOT}/gpu/third_party/fsr-vulkan/LICENSE.txt|fsr-vulkan-MIT.txt"
+      "${GOW3_ROOT}/gpu/third_party/fonts/LICENSE-DejaVu.txt|DejaVu-fonts.txt")
+    string(REPLACE "|" ";" pair "${entry}")
+    list(GET pair 0 source)
+    list(GET pair 1 name)
+    list(APPEND GOW3_LICENSE_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy_if_different "${source}" "${GOW3_LAYOUT}/ThirdParty/${name}")
+  endforeach()
   add_custom_command(TARGET gow3_uwp POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${GOW3_LAYOUT}/ThirdParty"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GOW3_DOZEN_ROOT}/src/microsoft/vulkan/vulkan_dzn.dll" "${GOW3_LAYOUT}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GOW3_MESA_ROOT}/tools/dxc/bin/x64/dxil.dll" "${GOW3_LAYOUT}"
-    COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_MESA_ROOT}/mesa/licenses/MIT" "${GOW3_LAYOUT}/ThirdParty/Mesa-MIT.txt"
-    COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_MESA_ROOT}/tools/dxc/LICENCE-MIT.txt" "${GOW3_MESA_ROOT}/tools/dxc/LICENSE-LLVM.txt" "${GOW3_MESA_ROOT}/tools/dxc/LICENSE-MS.txt" "${GOW3_LAYOUT}/ThirdParty")
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GOW3_DOZEN_DLL}" "${GOW3_LAYOUT}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GOW3_DXC_ROOT}/bin/x64/dxil.dll" "${GOW3_LAYOUT}"
+    ${GOW3_LICENSE_COMMANDS})
 endif()
 add_custom_command(TARGET gow3_uwp POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "${GOW3_LAYOUT}/Assets" "${GOW3_LAYOUT}/ThirdParty" "${GOW3_LAYOUT}/Patches"
@@ -74,4 +100,6 @@ add_custom_command(TARGET gow3_uwp POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:gow3_uwp>" "${GOW3_LAYOUT}"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GOW3_DEPS_ROOT}/libwinpthread/bin/libwinpthread-1.dll" "${GOW3_LAYOUT}"
   COMMAND ${CMAKE_COMMAND} -E copy "${GOW3_PTHREAD}/share/licenses/winpthreads/COPYING" "${GOW3_LAYOUT}/ThirdParty/winpthread-COPYING.txt"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GOW3_ROOT}/LICENSE" "${GOW3_LAYOUT}/LICENSE.txt"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_LIST_DIR}/CREDITS.md" "${GOW3_LAYOUT}"
   COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_LIST_DIR}/AppxManifest.xml" "${GOW3_LAYOUT}")
