@@ -120,6 +120,7 @@ static void loader() {
     _putenv_s("GOW3_PRECOMPILE_DUMP",dump.c_str());
     std::string user=winrt::to_string(local)+"\\user";
     CreateDirectoryW((std::wstring(local)+L"\\user").c_str(),nullptr);
+    CreateDirectoryW((std::wstring(local)+L"\\Prepared").c_str(),nullptr);
     _putenv_s("GOW3_GPU_USER_DIR",user.c_str());
     _putenv_s("GOW3_UWP_SWAP_FILE",(winrt::to_string(local)+"\\gow3-swap.bin").c_str());
 #ifdef GOW3_BUILD_GRAPHICS
@@ -176,9 +177,28 @@ static void loader() {
         }
         finished=true; return;
     }
-    std::string package=winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
-    std::string boot=package+"\\Prepared\\boot-linked.bin";
-    std::string content=package+"\\Prepared\\content.bin";
+    // The prepared game files are made from the player's own dump (scripts/prepare-game.ps1) and are never
+    // packaged: LocalState\Prepared (uploaded during development), else gow3-prepared next to the dump.
+    std::string prepared;
+    for(std::string candidate:{winrt::to_string(local)+"\\Prepared",dump+"\\gow3-prepared"}) {
+        if(FILE *probe=gow3_uwp_fopen((candidate+"\\boot-linked.bin").c_str(),"rb")) { std::fclose(probe); prepared=candidate; break; }
+    }
+    if(prepared.empty()) {
+        std::printf("STOP: prepared game files are missing from LocalState\\Prepared and %s\\gow3-prepared; "
+                    "run xbox/scripts/prepare-game.ps1 -Dump <dump folder>\n",dump.c_str());
+        finished=true; return;
+    }
+    char format[64]={};
+    if(FILE *marker=gow3_uwp_fopen((prepared+"\\format.txt").c_str(),"rb")) { std::fread(format,1,sizeof(format)-1,marker); std::fclose(marker); }
+    format[std::strcspn(format,"\r\n")]=0;
+    if(std::strcmp(format,"gow3-uwp-prepared " GOW3_PREPARED_FORMAT)) {
+        std::printf("STOP: %s holds prepared files of format '%s', this launcher needs 'gow3-uwp-prepared %s'; "
+                    "run xbox/scripts/prepare-game.ps1 again\n",prepared.c_str(),format,GOW3_PREPARED_FORMAT);
+        finished=true; return;
+    }
+    std::printf("Prepared game files: %s\n",prepared.c_str());
+    std::string boot=prepared+"\\boot-linked.bin";
+    std::string content=prepared+"\\content.bin";
     _putenv_s("GOW3_CONFIG",(user+"\\graphics.cfg").c_str());
     _putenv_s("GOW3_PAD_FILE",(winrt::to_string(local)+"\\controls.txt").c_str());
     _putenv_s("GOW3_CAPTURE_TRIGGER",(winrt::to_string(local)+"\\capture.txt").c_str());
@@ -202,7 +222,7 @@ static void loader() {
     for(auto [key,value]:performance_defaults) if(!std::getenv(key)) _putenv_s(key,value);
     const char* render_res=std::getenv("GOW3_UWP_RENDER_RES");
     const bool use_720p=render_res&&std::strcmp(render_res,"720p")==0;
-    std::string patches=package+"\\Prepared\\patches-"+(use_720p?"720p":"native")+".bin";
+    std::string patches=prepared+"\\patches-"+(use_720p?"720p":"native")+".bin";
     _putenv_s("GOW3_DMEM_MB","7104");
     if(mode=="boot") runtime_memory_start_paging();
     _putenv_s("GOW3_ENGINE_FPS","60");

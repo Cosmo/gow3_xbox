@@ -223,9 +223,17 @@ after testing. This update does not change shader or pipeline cache formats.
   signed packages, PC logs, transfer receipts and raw Xbox results.
 - `settings.example.json`: generic local-settings schema. Actual paths stay in `.local/settings.json`.
 
-Development packages contain private, dump-derived prepared executable code. They are
-local test artifacts, not redistributable releases. Neither prepared code nor full game
-assets are committed. Signing keys remain in the local Windows certificate store.
+Packages contain no game code or assets: only the launcher, its libraries, Dozen and
+licenses. The launcher's prepared game files (the linked game code, content profile and
+graphics patches) are made from the player's own dump with
+`scripts/prepare-game.ps1 -Dump <app0 folder>`, which writes them to `gow3-prepared` next to
+the dump; preparing the dump on its USB drive once serves both PC and Xbox. At start the
+launcher loads them from `LocalState\Prepared` if present (development: `pc-smoke.ps1` copies
+`.local/prepared` there, `xbox-upload-prepared.ps1` uploads it to a console), otherwise from
+`<dump>\gow3-prepared`, and stops with a message naming both places when neither has them.
+`prepared-format.txt` versions the files; after a launcher update that raises it, the
+launcher asks for `prepare-game.ps1` to be run again. Signing keys remain in the local
+Windows certificate store.
 
 The build depends on no other project. `scripts/fetch-deps.py` downloads every third-party
 library and tool at a pinned version from its upstream source, checks its SHA-256 and unpacks
@@ -278,6 +286,9 @@ refuses to overwrite an existing setup.
 ./xbox/scripts/package.ps1
 ```
 
+`-Prepare` runs `prepare-game.ps1` on the PC dump into `.local/prepared`; `pc-smoke.ps1` copies
+those files into the test package's `LocalState\Prepared`, and `xbox-upload-prepared.ps1
+-Console <name> -App <full package name>` uploads them to a console after the app's first launch.
 `ready` runs the native-code smoke test; `imports` lists unresolved imports; `boot`
 attempts linked-module initialization and then the game's entry point. The package's
 LocalState `run.txt` selects a mode on line 1 and a dump folder on line 2. Logs are

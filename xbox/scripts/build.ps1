@@ -14,11 +14,8 @@ if($devPackage -and $devPackage.InstallLocation -and (Test-Path -LiteralPath $de
 }
 $config=Get-Content -LiteralPath (Join-Path $local 'settings.json') -Raw | ConvertFrom-Json
 if($Prepare) {
-    $prepared=Join-Path $local 'prepared'
-    foreach($script in @('prepare.py','link_modules.py','content_profile.py')) {
-        & $config.python (Join-Path $repo "scripts/$script") $config.pc_dump --out $prepared
-        if($LASTEXITCODE) { throw "Guest preparation failed: $script" }
-    }
+    & (Join-Path $PSScriptRoot 'prepare-game.ps1') -Dump $config.pc_dump -Out (Join-Path $local 'prepared') -Python $config.python
+    if($LASTEXITCODE) { throw 'Game preparation failed' }
 }
 if($Graphics -and !(Test-Path -LiteralPath (Join-Path $local 'deps/ffmpeg-install/lib/libavcodec.a'))) {
     & (Join-Path $PSScriptRoot 'build-deps.ps1') -Python $config.python

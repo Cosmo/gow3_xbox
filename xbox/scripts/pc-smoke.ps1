@@ -20,7 +20,7 @@ if($Isolated) {
     $sourceLayout=$layout
     $layout=Join-Path $root '.local/pc-layout'
     New-Item -ItemType Directory -Force $layout | Out-Null
-    foreach($name in @('AppxManifest.xml','gow3_uwp.exe','libwinpthread-1.dll','vulkan_dzn.dll','dxil.dll','Assets','Prepared','ThirdParty')) {
+    foreach($name in @('AppxManifest.xml','gow3_uwp.exe','libwinpthread-1.dll','vulkan_dzn.dll','dxil.dll','Assets','ThirdParty')) {
         Copy-Item -LiteralPath (Join-Path $sourceLayout $name) -Destination $layout -Recurse -Force
     }
     $symbols=Join-Path $root '.local/build/gow3_uwp.pdb'
@@ -41,6 +41,19 @@ $state=Join-Path $env:LOCALAPPDATA "Packages/$($package.PackageFamilyName)/Local
 New-Item -ItemType Directory -Force $state | Out-Null
 $settings=Get-Content -LiteralPath (Join-Path $root '.local/settings.json') -Raw | ConvertFrom-Json
 [IO.File]::WriteAllText((Join-Path $state 'run.txt'),"$Mode`n$($settings.pc_dump)`n",[Text.UTF8Encoding]::new($false))
+# The package holds no game code: the development prepared files go to LocalState\Prepared.
+$prepared=Join-Path $root '.local/prepared'
+if(Test-Path -LiteralPath (Join-Path $prepared 'format.txt')) {
+    $target=Join-Path $state 'Prepared'
+    New-Item -ItemType Directory -Force $target | Out-Null
+    foreach($name in @('boot-linked.bin','content.bin','patches-native.bin','patches-720p.bin','format.txt')) {
+        $source=Get-Item -LiteralPath (Join-Path $prepared $name)
+        $copy=Get-Item -LiteralPath (Join-Path $target $name) -ErrorAction SilentlyContinue
+        if(!$copy -or $copy.Length -ne $source.Length -or $copy.LastWriteTimeUtc -ne $source.LastWriteTimeUtc) {
+            Copy-Item -LiteralPath $source.FullName -Destination $target -Force
+        }
+    }
+}
 if(!('Gow3Activation' -as [type])) {
 Add-Type @'
 using System;
