@@ -212,6 +212,7 @@ static uint64_t uwp_swap_page_out_locked(uint64_t bytes,UwpPage *exclude,int inc
         if(!uwp_swap_transfer(page->physical,(void *)page->address,1)) uwp_fail("swap private write",page->address);
         if(!VirtualFree((void *)page->address,PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER))
             uwp_fail("swap private page release",page->address);
+        page->placed=0;
         page->kind=4;
         page->committed=0;
         uwp_swap_split(page);

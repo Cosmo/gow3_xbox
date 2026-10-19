@@ -231,7 +231,7 @@ static void loader() {
 
 struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFrameworkView> {
     winrt::Windows::UI::Core::CoreWindow window{nullptr};
-    bool closed=false;
+    std::atomic<bool> closed{false};
     void Initialize(winrt::Windows::ApplicationModel::Core::CoreApplicationView const& app) {
         app.Activated([this](auto const&,auto const&) { window.Activate(); });
         winrt::Windows::ApplicationModel::Core::CoreApplication::Suspending([](auto const&,auto const&) {
@@ -297,7 +297,7 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
         }).detach();
         // Scripts request a normal close through LocalState\quit.txt, the same path as closing the window,
         // instead of terminating the process (which leaves the window or the last frame on screen).
-        std::thread([dispatcher=window.Dispatcher(),
+        std::thread([this,dispatcher=window.Dispatcher(),
                      quit=std::wstring(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())+L"\\quit.txt"] {
             winrt::init_apartment(winrt::apartment_type::multi_threaded);
             WIN32_FILE_ATTRIBUTE_DATA attributes{};
@@ -305,11 +305,22 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
             while(!GetFileAttributesExFromAppW(quit.c_str(),GetFileExInfoStandard,&attributes)) Sleep(250);
             DeleteFileFromAppW(quit.c_str());
             if(!finished.load()) { std::puts("UWP lifecycle: quit requested"); std::fflush(stdout); }
-            dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,[] {
+            dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::High,[] {
                 winrt::Windows::ApplicationModel::Core::CoreApplication::Exit();
             });
+            for(int wait=0;wait<12&&!closed;++wait) Sleep(250);
+            exit_now(closed ? "window closed" : "quit requested, window still open");
         }).detach();
         while(!closed) window.Dispatcher().ProcessEvents(winrt::Windows::UI::Core::CoreProcessEventsOption::ProcessOneAndAllPending);
+        exit_now("window closed");
+    }
+    // The normal program exit would run static destructors and DLL teardown while the game's threads
+    // still run, and during gameplay that hung for minutes with the last frame on screen.
+    [[noreturn]] static void exit_now(const char* reason) {
+        if(!finished.load()) std::printf("UWP lifecycle: exiting (%s)\n",reason);
+        std::fflush(nullptr);
+        TerminateProcess(GetCurrentProcess(),0);
+        for(;;) Sleep(INFINITE);
     }
     void Uninitialize() {}
 };

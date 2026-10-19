@@ -2,7 +2,7 @@
  * use private memory; a live physical alias promotes that page to a small section.
  * Unmapped direct-page contents survive in a bounded-to-touched-pages snapshot. */
 typedef struct { uintptr_t owner; unsigned char *saved; HANDLE section; unsigned references,frame; uint64_t hash; unsigned char pinned,disk,hash_valid; } UwpPhysical;
-typedef struct { uintptr_t address; uint64_t physical; int mapped, kind, pageable, split, committed; unsigned view_mask; int protection[4]; } UwpPage;
+typedef struct { uintptr_t address; uint64_t physical; int mapped, kind, pageable, split, committed, isolated, placed; unsigned view_mask; int protection[4]; } UwpPage;
 static UwpPhysical *uwp_physical;
 static UwpPage *uwp_pages;
 static size_t uwp_count,uwp_capacity;
@@ -55,31 +55,54 @@ static uintptr_t uwp_available(uintptr_t address,uint64_t size) {
     }
     return address;
 }
+// Unused guest windows stay one placeholder per reserved run; a 16 KiB page gets its own region
+// only when it is first used. Every host region costs time when the process is torn down: with a
+// region per reserved page, closing the game kept its window or last frame on screen for minutes.
 static int uwp_reserve(uintptr_t address,uint64_t size) {
     if(address<USER_MIN || size>USER_MAX-address) return -1;
-    for(uintptr_t at=address&~(uintptr_t)65535,end=align_up(address+size,65536);at<end;at+=65536) {
-        if(uwp_page(at)) continue;
-        if(!VirtualAlloc2FromApp(NULL,(void *)at,65536,MEM_RESERVE|MEM_RESERVE_PLACEHOLDER,PAGE_NOACCESS,NULL,0)) return -1;
-        if(uwp_count+4>uwp_capacity) {
-            size_t capacity=uwp_capacity ? uwp_capacity*2 : 256;
+    uintptr_t end=align_up(address+size,65536);
+    for(uintptr_t at=address&~(uintptr_t)65535;at<end;) {
+        if(uwp_page(at)) { at+=65536; continue; }
+        uintptr_t run=at;
+        while(run<end && !uwp_page(run)) run+=65536;
+        if(!VirtualAlloc2FromApp(NULL,(void *)at,run-at,MEM_RESERVE|MEM_RESERVE_PLACEHOLDER,PAGE_NOACCESS,NULL,0)) return -1;
+        size_t count=(run-at)/PAGE;
+        if(uwp_count+count>uwp_capacity) {
+            size_t capacity=uwp_capacity ? uwp_capacity : 256;
+            while(capacity<uwp_count+count) capacity*=2;
             UwpPage *next=realloc(uwp_pages,capacity*sizeof(*next));
             if(!next) uwp_fail("virtual page bookkeeping",at);
             uwp_pages=next; uwp_capacity=capacity;
         }
-        for(unsigned n=0;n<3;++n) {
-            if(!VirtualFree((void *)(at+n*PAGE),PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) uwp_fail("splitting placeholder",at+n*PAGE);
-        }
         size_t i=uwp_index(at);
-        memmove(uwp_pages+i+4,uwp_pages+i,(uwp_count-i)*sizeof(*uwp_pages));
-        for(unsigned n=0;n<4;++n) uwp_pages[i+n]=(UwpPage){.address=at+n*PAGE};
-        uwp_count+=4;
+        memmove(uwp_pages+i+count,uwp_pages+i,(uwp_count-i)*sizeof(*uwp_pages));
+        for(size_t n=0;n<count;++n) uwp_pages[i+n]=(UwpPage){.address=at+n*PAGE};
+        uwp_count+=count;
+        at=run;
     }
     return 0;
+}
+// Splits this page out of a larger unused placeholder, so it can be replaced on its own.
+static void uwp_isolate(UwpPage *page) {
+    if(page->isolated) return;
+    MEMORY_BASIC_INFORMATION info;
+    if(!VirtualQuery((void *)page->address,&info,sizeof(info)) || info.State!=MEM_RESERVE) uwp_fail("placeholder query",page->address);
+    uintptr_t base=(uintptr_t)info.AllocationBase,end=page->address+info.RegionSize;
+    if(base<page->address && !VirtualFree((void *)base,page->address-base,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER))
+        uwp_fail("splitting placeholder",page->address);
+    if(end>page->address+PAGE && !VirtualFree((void *)page->address,PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER))
+        uwp_fail("splitting placeholder",page->address);
+    page->isolated=1;
 }
 static int uwp_commit(UwpPage *page) {
     if(page->kind==4||page->kind==3) return uwp_swap_page_in(page);
     if(page->kind!=1) return 0;
     if(page->committed) return 0;
+    if(!page->placed) {
+        uwp_isolate(page);
+        if(!VirtualAlloc2FromApp(NULL,(void *)page->address,PAGE,MEM_RESERVE|MEM_REPLACE_PLACEHOLDER,PAGE_NOACCESS,NULL,0)) uwp_fail("private page reservation",page->address);
+        page->placed=1;
+    }
     for(unsigned attempt=0;!VirtualAllocFromApp((void *)page->address,PAGE,MEM_COMMIT,PAGE_READWRITE);++attempt)
         if(attempt==7 || !uwp_swap_page_out_locked(UINT64_C(16)<<20,page,1)) uwp_fail("commit-on-touch",page->address);
     page->committed=1;
@@ -140,7 +163,8 @@ static int uwp_detach(UwpPage *page,int preserve) {
             memcpy(saved,(void *)page->address,PAGE);
             free(physical->saved); physical->saved=saved; ++uwp_snapshots;
         }
-        if(!VirtualFree((void *)page->address,PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) uwp_fail("private page release",page->address);
+        if(page->placed && !VirtualFree((void *)page->address,PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) uwp_fail("private page release",page->address);
+        page->placed=0;
     } else if(page->kind==3||page->kind==4) {
         physical->hash_valid=0;
         uwp_swap_unmap_view(page);
@@ -184,6 +208,7 @@ static int uwp_promote(UwpPhysical *physical,uint64_t offset) {
             if(!VirtualProtectFromApp((void *)owner->address,PAGE,PAGE_READONLY,&old)) uwp_fail("alias promotion read",owner->address);
             memcpy(alias,(void *)owner->address,PAGE);
             if(!VirtualFree((void *)owner->address,PAGE,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)) uwp_fail("alias promotion release",owner->address);
+            owner->placed=0;
         }
         uwp_swap_coalesce(owner);
         if(!MapViewOfFile3FromApp(section,GetCurrentProcess(),(void *)owner->address,0,PAGE,MEM_REPLACE_PLACEHOLDER,PAGE_READWRITE,NULL,0)) uwp_fail("canonical alias map",owner->address);
@@ -211,6 +236,7 @@ static int host_map(uintptr_t address,uint64_t size,int prot,int reserved,uint64
         UwpPhysical *physical=&uwp_physical[(offset+n)/PAGE];
         if(physical->references && uwp_promote(physical,offset+n)) uwp_fail("alias section resource limit",page->address);
         if(physical->section || !physical->disk) uwp_swap_coalesce(page);
+        if(physical->section || physical->disk) uwp_isolate(page);
         if(physical->section) {
             if(!MapViewOfFile3FromApp(physical->section,GetCurrentProcess(),(void *)page->address,0,PAGE,MEM_REPLACE_PLACEHOLDER,PAGE_READWRITE,NULL,0)) uwp_fail("physical alias map",page->address);
             page->kind=2;
@@ -218,7 +244,6 @@ static int host_map(uintptr_t address,uint64_t size,int prot,int reserved,uint64
             page->kind=4;
             uwp_swap_split(page);
         } else {
-            if(!VirtualAlloc2FromApp(NULL,(void *)page->address,PAGE,MEM_RESERVE|MEM_REPLACE_PLACEHOLDER,PAGE_NOACCESS,NULL,0)) uwp_fail("private page reservation",page->address);
             page->kind=1;
         }
         page->mapped=1; page->physical=offset+n; page->pageable=pageable; page->committed=0;
