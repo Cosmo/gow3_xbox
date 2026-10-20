@@ -501,10 +501,11 @@ bool Instance::CreateDevice() {
             family_properties.begin(), family_properties.end(), [](const auto& family) {
                 return family.queueCount && (family.queueFlags & vk::QueueFlagBits::eSparseBinding);
             });
-        if (sparse_family == family_properties.end()) {
-            return false;
+        // spartanport: a driver without sparse binding at all (Dozen) gets no sparse buffers, so the
+        // graphics queue stands in instead of failing device creation.
+        if (sparse_family != family_properties.end()) {
+            sparse_queue_family_index = static_cast<u32>(sparse_family - family_properties.begin());
         }
-        sparse_queue_family_index = static_cast<u32>(sparse_family - family_properties.begin());
     }
 
     static constexpr std::array queue_priorities = {1.0f};
