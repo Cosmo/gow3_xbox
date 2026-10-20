@@ -1,0 +1,11 @@
+/.local/
+/build/
+/AppPackages/
+*.local.json
+*.local.ps1
+*.pfx
+# The public test key every package is signed with (README.md); other keys stay private.
+!/signing/gow3_xbox-signing.pfx
+*.cer
+*.credential.xml
+*.user

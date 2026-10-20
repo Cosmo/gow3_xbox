@@ -20,6 +20,9 @@
 #include <math.h>
 #include <SDL3/SDL.h>
 #include <sys/stat.h>
+#ifdef GOW3_UWP
+#include "input.h"
+#endif
 
 #define ERR_INVALID_ARG ((int32_t)0x80920001)
 #define ERR_INVALID_HANDLE ((int32_t)0x80920003)
@@ -458,6 +461,13 @@ static void sample_host(PadData *d) {
     d->orientation[3]=1.0f;
     d->connected=1; d->connected_count=connected_count ? connected_count : 1;
     d->timestamp=now_us();
+#ifdef GOW3_UWP
+    uint8_t axes[6]={128,128,128,128,0,0};
+    d->connected=gow3_uwp_gamepad(&d->buttons,axes);
+    d->left_x=axes[0]; d->left_y=axes[1]; d->right_x=axes[2]; d->right_y=axes[3];
+    d->l2=axes[4]; d->r2=axes[5];
+    return;
+#endif
     SDL_Gamepad *g=current_gamepad();
     watch_wheel();
     if (spartanportgpu_overlay_captures_input()) { drop_wheel(); return; } /* settings menu open: neutral input */
@@ -509,6 +519,7 @@ static void sample_host(PadData *d) {
  * touchpad is the left side; lx= ly= rx= ry= (0..255) override the sticks. An empty file
  * releases everything. */
 static struct { uint32_t buttons; int stick[4]; } injected={0,{-1,-1,-1,-1}};
+static int injection_available;
 static int replay_armed;      /* 1 while a SPARTAN_PAD_REPLAY recording plays, 2 once it ended */
 static uint64_t replay_start; /* 0: (re)start at the next sample */
 static void read_inject(void) {
@@ -530,6 +541,7 @@ static void read_inject(void) {
 #endif
     FILE *f=fopen(path,"r");
     if (!f) return;
+    injection_available=1;
     static const char *sticks[]={"lx=","ly=","rx=","ry="};
     injected.buttons=0;
     for (int i=0;i<4;++i) injected.stick[i]=-1;
@@ -712,12 +724,30 @@ static void engine_fps_combo(PadData *d) {
 /* After the menu or the text dialog closes, buttons still held (the Cross that accepted a
  * name) stay hidden until released: the game would take them as a new press. */
 static int hold_after_capture;
+#ifdef GOW3_UWP
+/* The UWP window has no SDL controller events. Dialogs sample the same physical
+ * and scripted buttons independently of guest reads, which may pause in a save. */
+uint32_t runtime_pad_dialog_buttons(void) {
+    uint32_t buttons=0; uint8_t axes[6]={128,128,128,128,0,0};
+    gow3_uwp_dialog_gamepad(&buttons,axes);
+    pthread_mutex_lock(&lock);
+    read_inject(); buttons|=injected.buttons;
+    pthread_mutex_unlock(&lock);
+    return buttons;
+}
+#endif
 static void sample(PadData *d) {
     sample_host(d);
-    if (spartanportgpu_overlay_captures_input()) { hold_after_capture=1; click.side=-1; reset_dodge(); return; }
+    if (spartanportgpu_overlay_captures_input()) {
+        hold_after_capture=1; click.side=-1; reset_dodge();
+        d->buttons=0; d->left_x=d->left_y=d->right_x=d->right_y=128;
+        d->l2=d->r2=0; d->touch_count=0;
+        return;
+    }
     record_sample(d); /* the click sources as they are: a replay plays them again */
     read_inject();
     replay_sample(d);
+    if (injection_available || replay_armed) d->connected=1;
     d->buttons|=injected.buttons;
     if (injected.buttons & BTN_L2) d->l2=255;
     if (injected.buttons & BTN_R2) d->r2=255;
@@ -776,7 +806,14 @@ static ABI int32_t pad_info(int32_t handle, ControllerInfo *info) {
     info->dead_zone_left=info->dead_zone_right=2;
     info->connection_type=0; info->connected=1; info->device_class=0;
     pthread_mutex_lock(&lock);
+#ifdef GOW3_UWP
+    uint32_t buttons=0; uint8_t axes[6];
+    info->connected=gow3_uwp_gamepad(&buttons,axes);
+    read_inject();
+    if (injection_available || replay_armed) info->connected=1;
+#else
     current_gamepad();
+#endif
     info->connected_count=connected_count ? connected_count : 1;
     pthread_mutex_unlock(&lock);
     return 0;
@@ -785,10 +822,14 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
     if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
     if (!param) return ERR_INVALID_ARG;
     pthread_mutex_lock(&lock);
-    SDL_Gamepad *g=current_gamepad();
     /* The menu's vibration strength scales the game's motors (0: off). */
     const unsigned percent=(unsigned)spartanportgpu_vibration_percent();
+#ifdef GOW3_UWP
+    gow3_uwp_vibration((uint8_t)(param[0]*percent/100u),(uint8_t)(param[1]*percent/100u));
+#else
+    SDL_Gamepad *g=current_gamepad();
     if (g) SDL_RumbleGamepad(g,(uint16_t)(param[0]*257u*percent/100u),(uint16_t)(param[1]*257u*percent/100u),1000);
+#endif
     pthread_mutex_unlock(&lock);
     return 0;
 }

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "spartanport_overlay.h"
+#ifdef GOW3_UWP
+#include "../../xbox/graphics/overlay.h"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -65,6 +68,7 @@ bool initialized = false;
 std::atomic<bool> menu_open{false};
 bool r3_down = false, l2_down = false;
 std::atomic<bool> loading{false};
+std::string loading_label;
 std::atomic<u32> loading_done{0}, loading_total{0};
 std::atomic<u32> background_done{0}, background_total{0};
 // A short message in a corner (saved screenshot), shown until notice_until.
@@ -817,7 +821,9 @@ void LoadingScreen() {
                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
     const u32 done = loading_done, total = loading_total;
     ImGui::SetWindowFontScale(1.6f);
-    ImGui::TextUnformatted(total ? "Loading shader cache..." : "Preparing graphics...");
+    ImGui::TextUnformatted(loading_label.empty()
+                              ? (total ? "Loading shader cache..." : "Preparing graphics...")
+                              : loading_label.c_str());
     ImGui::SetWindowFontScale(1.0f);
     if (total) {
         char count[64];
@@ -825,7 +831,8 @@ void LoadingScreen() {
                       u32(u64(done) * 100 / total));
         ImGui::ProgressBar(float(done) / float(total), ImVec2(-1.0f, 0.0f), count);
     }
-    ImGui::TextDisabled("The first start after an update takes longer.");
+    ImGui::TextDisabled(loading_label.empty() ? "The first start after an update takes longer." :
+                       "Other shaders will be prepared during gameplay.");
     ImGui::End();
 }
 
@@ -940,17 +947,33 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
                                    int(spartanport_font_ttf_end - spartanport_font_ttf), 18.0f, &font_config);
 
     const vk::Instance vk_instance = instance.GetInstance();
-    ImGui_ImplVulkan_LoadFunctions(
-        instance.ApiVersion(),
+    struct LoaderContext {VkInstance instance;VkDevice device;};
+    LoaderContext loader{vk_instance,static_cast<VkDevice>(instance.GetDevice())};
+    const bool functions_loaded=ImGui_ImplVulkan_LoadFunctions(
+        std::min(instance.ApiVersion(),Vulkan::TargetVulkanApiVersion),
         [](const char* name, void* user) {
-            return VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr(
-                *static_cast<const vk::Instance*>(user), name);
+            auto& loader=*static_cast<LoaderContext*>(user);
+            auto proc=VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(loader.device,name);
+            if(!proc) proc=VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr(loader.instance,name);
+#ifdef GOW3_UWP
+            // Dozen's UWP build has no surface or swapchain functions. The overlay draws into the presenter's
+            // images and never uses imgui's window helpers, but imgui refuses to start with any function missing.
+            if(!proc&&(std::strstr(name,"Surface")||std::strstr(name,"Swapchain")))
+                return reinterpret_cast<PFN_vkVoidFunction>(+[] {
+                    std::fputs("Overlay: imgui called a Vulkan window helper, which UWP lacks\n",stderr); std::abort(); });
+#endif
+            if(!proc) std::fprintf(stderr,"Overlay: Vulkan function unavailable: %s\n",name);
+            return proc;
         },
-        const_cast<vk::Instance*>(&vk_instance));
+        &loader);
+    if(!functions_loaded) {
+        std::puts("Overlay: required functions unavailable, disabled");
+        ImGui::DestroyContext();return;
+    }
 
     const VkFormat color_format = static_cast<VkFormat>(format);
     ImGui_ImplVulkan_InitInfo info{};
-    info.ApiVersion = instance.ApiVersion();
+    info.ApiVersion = std::min(instance.ApiVersion(),Vulkan::TargetVulkanApiVersion);
     info.Instance = vk_instance;
     info.PhysicalDevice = instance.GetPhysicalDevice();
     info.Device = instance.GetDevice();
@@ -1208,10 +1231,17 @@ void SetLoading(bool active, u32 done, u32 total) {
     loading_total = total;
     loading = active;
 }
+void SetLoadingLabel(const std::string& label) {
+    std::scoped_lock lock{imgui_mutex};
+    loading_label = label;
+}
 
 bool Visible() {
     const auto& s = SpartanSettings::Get();
     return initialized && (loading || background_total || menu_open || text_entry_active || choice_active ||
+#ifdef GOW3_UWP
+                           Gow3Uwp::Overlay::Visible() ||
+#endif
                            choice_retiring || s.show_fps || NoticeActive() ||
                            (s.actor_watch_supported && s.enemy_health_bar));
 }
@@ -1272,6 +1302,9 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     UpdateChoiceTextures();
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
+#ifdef GOW3_UWP
+    Gow3Uwp::Overlay::Render(*overlay_instance);
+#endif
     if (loading) {
         LoadingScreen();
     }

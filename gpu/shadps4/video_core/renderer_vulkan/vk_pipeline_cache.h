@@ -219,7 +219,11 @@ private:
     vk::UniquePipelineLayout pipeline_layout;
     Shader::Profile profile{};
     Shader::Pools pools;
+#ifdef GOW3_UWP
+    CompilerPool<Shader::Pools> compiler_pools{2};
+#else
     CompilerPool<Shader::Pools> compiler_pools{8};
+#endif
     std::unique_ptr<AsyncCompiler> compiler, capture_compiler;
     std::vector<vk::UniquePipelineCache> worker_pipeline_caches;
     bool worker_caches_seeded = false;

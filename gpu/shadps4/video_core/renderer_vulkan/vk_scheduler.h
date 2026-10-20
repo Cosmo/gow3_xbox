@@ -5,6 +5,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <condition_variable>
 #include <deque>
@@ -616,9 +618,21 @@ public:
     }
 
     void Execute(vk::CommandBuffer cmdbuf) {
+        static const bool trace = [] {
+            const char* env = std::getenv("SPARTAN_RECORDER_TIMINGS");
+            return env && env[0] == '1';
+        }();
         for (CommandBase* command = first; command;) {
             CommandBase* const next = command->next;
-            command->Execute(cmdbuf);
+            if (trace) {
+                const auto started = std::chrono::steady_clock::now();
+                command->Execute(cmdbuf);
+                const double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - started).count();
+                if (ms >= 10.0) std::printf("Recorder command: %.3f ms; %s\n", ms, command->Name());
+            } else {
+                command->Execute(cmdbuf);
+            }
             command->~CommandBase();
             command = next;
         }
@@ -648,6 +662,7 @@ private:
     struct CommandBase {
         virtual ~CommandBase() = default;
         virtual void Execute(vk::CommandBuffer cmdbuf) = 0;
+        virtual const char* Name() const = 0;
         CommandBase* next{};
     };
     template <typename Func>
@@ -657,6 +672,7 @@ private:
         void Execute(vk::CommandBuffer cmdbuf) override {
             func(cmdbuf);
         }
+        const char* Name() const override { return __PRETTY_FUNCTION__; }
         Func func;
     };
 

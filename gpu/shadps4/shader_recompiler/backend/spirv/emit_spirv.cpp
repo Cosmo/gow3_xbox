@@ -119,15 +119,59 @@ void Invoke(EmitContext& ctx, IR::Inst* inst) {
     }
 }
 
+Id TypeId(const EmitContext& ctx, IR::Type type);
 void EmitInst(EmitContext& ctx, IR::Inst* inst) {
+#ifdef GOW3_UWP
+    const auto name=IR::NameOf(inst->GetOpcode());
+    bool null_resource=false;
+    const bool buffer_op=name.starts_with("LoadBuffer")||name.starts_with("StoreBuffer")||name.starts_with("BufferAtomic");
+    if((buffer_op||name.starts_with("Image"))&&inst->NumArgs() && inst->Arg(0).IsImmediate()) {
+        const auto handle=inst->Arg(0).U32();
+        if(name.starts_with("LoadBuffer") || name.starts_with("StoreBuffer") || name.starts_with("BufferAtomic")) {
+            if(handle<ctx.info.buffers.size()) {
+                const auto& buffer=ctx.info.buffers[handle];
+                auto sharp=buffer.GetSharp(ctx.info);
+                null_resource=!buffer.IsSpecial()&&(!sharp||!sharp.GetSize());
+            }
+        } else if(name.starts_with("Image")) {
+            const auto image=handle&0xffff;
+            null_resource=image<ctx.info.images.size()&&!ctx.info.images[image].GetSharp(ctx.info);
+        }
+    }
+    if(null_resource) {
+        const auto type=IR::TypeOf(inst->GetOpcode());
+        if(type!=IR::Type::Void) inst->SetDefinition<Id>(ctx.ConstantNull(TypeId(ctx,type)));
+        return;
+    }
+#endif
     switch (inst->GetOpcode()) {
 #define OPCODE(name, result_type, ...)                                                             \
     case IR::Opcode::name:                                                                         \
-        return Invoke<&Emit##name>(ctx, inst);
+        Invoke<&Emit##name>(ctx, inst); break;
 #include "shader_recompiler/ir/opcodes.inc"
 #undef OPCODE
+    default: UNREACHABLE_MSG("Invalid opcode {}", inst->GetOpcode());
     }
-    UNREACHABLE_MSG("Invalid opcode {}", inst->GetOpcode());
+#ifdef GOW3_UWP
+    // Template reads preserve the normal UWP zero result for an absent
+    // resource. Runtime binds its existing safe fallback descriptors; stores
+    // still require a present resource when matching a prepared variant.
+    const bool parametric=ctx.info.offline_memory&&ctx.info.offline_memory->Parametric();
+    const auto type=IR::TypeOf(inst->GetOpcode());
+    if(parametric&&type!=IR::Type::Void&&inst->NumArgs()&&inst->Arg(0).IsImmediate()) {
+        const u32 handle=inst->Arg(0).U32();
+        std::optional<u32> slot;
+        if(name.starts_with("LoadBuffer")&&handle<ctx.info.buffers.size()&&!ctx.info.buffers[handle].IsSpecial())
+            slot=OfflineSlot::BufferPresent+handle;
+        else if(name.starts_with("Image")&&(handle&0xffff)<ctx.info.images.size())
+            slot=OfflineSlot::ImagePresent+(handle&0xffff);
+        if(slot) {
+            const Id flag=EmitOfflineConstant(ctx,1,*slot);
+            const Id present=ctx.OpINotEqual(ctx.U1[1],flag,ctx.ConstU32(0u));
+            inst->SetDefinition<Id>(ctx.OpSelect(TypeId(ctx,type),present,inst->Definition<Id>(),ctx.ConstantNull(TypeId(ctx,type))));
+        }
+    }
+#endif
 }
 
 Id TypeId(const EmitContext& ctx, IR::Type type) {
@@ -136,6 +180,8 @@ Id TypeId(const EmitContext& ctx, IR::Type type) {
         return ctx.U1[1];
     case IR::Type::U32:
         return ctx.U32[1];
+    case IR::Type::U8: return ctx.U8;
+    case IR::Type::U16: return ctx.U16;
     case IR::Type::U32x2:
         return ctx.U32[2];
     case IR::Type::U32x3:
@@ -144,6 +190,9 @@ Id TypeId(const EmitContext& ctx, IR::Type type) {
         return ctx.U32[4];
     case IR::Type::F32:
         return ctx.F32[1];
+    case IR::Type::F32x2: return ctx.F32[2];
+    case IR::Type::F32x3: return ctx.F32[3];
+    case IR::Type::F32x4: return ctx.F32[4];
     case IR::Type::U64:
         return ctx.U64;
     default:
@@ -362,10 +411,17 @@ void SetupCapabilities(const Info& info, const Profile& profile, const RuntimeIn
     } else if (stage == SwStage::Geometry && info.stores.GetAny(IR::Attribute::ViewportIndex)) {
         ctx.AddCapability(spv::Capability::MultiViewport);
     }
-    if (info.uses_dma || ctx.VertexMotion()) {
+    if (
+#ifndef GOW3_UWP
+        info.uses_dma ||
+#endif
+        ctx.VertexMotion()) {
         ctx.AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
         ctx.AddExtension("SPV_KHR_physical_storage_buffer");
     }
+#ifdef GOW3_UWP
+    if(info.uses_dma) ctx.AddCapability(spv::Capability::StorageBufferArrayDynamicIndexing);
+#endif
     const auto shared_type_count = std::popcount(static_cast<u32>(info.shared_types));
     if (shared_type_count > 1 && profile.supports_workgroup_explicit_memory_layout) {
         ctx.AddExtension("SPV_KHR_workgroup_memory_explicit_layout");
@@ -424,7 +480,7 @@ void DefineEntryPoint(const Info& info, EmitContext& ctx, Id main) {
         } else {
             ctx.AddExecutionMode(main, spv::ExecutionMode::OriginUpperLeft);
         }
-        if (info.has_discard) {
+        if (info.has_discard && ctx.profile.support_demote) {
             ctx.AddCapability(spv::Capability::DemoteToHelperInvocation);
         }
         if (info.stores.GetAny(IR::Attribute::Depth)) {

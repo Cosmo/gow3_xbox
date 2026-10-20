@@ -99,13 +99,22 @@ GraphicsPipeline::GraphicsPipeline(
         .pVertexAttributeDescriptions = sdata.vertex_attributes.data(),
     };
 
-    const auto topology = LiverpoolToVK::PrimitiveType(key.prim_type);
-    const vk::PipelineInputAssemblyStateCreateInfo input_assembly = {
-        .topology = topology,
-    };
-
     const bool is_rect_list = key.prim_type == AmdGpu::PrimitiveType::RectList;
     const bool is_quad_list = key.prim_type == AmdGpu::PrimitiveType::QuadList;
+#ifdef GOW3_UWP
+    const bool geometry_expansion=(is_rect_list||is_quad_list)&&instance.IsGeometryStageSupported()&&
+        !infos[u32(Shader::SwStage::Geometry)]&&!infos[u32(Shader::SwStage::TessellationControl)]&&
+        !infos[u32(Shader::SwStage::TessellationEval)];
+#else
+    const bool geometry_expansion=false;
+#endif
+    const auto topology = geometry_expansion ? (is_rect_list ? vk::PrimitiveTopology::eTriangleList
+        : vk::PrimitiveTopology::eLineListWithAdjacency) : LiverpoolToVK::PrimitiveType(key.prim_type);
+    const vk::PipelineInputAssemblyStateCreateInfo input_assembly = {
+        .topology = topology,
+        .primitiveRestartEnable = key.baked.enabled && key.baked.restart,
+    };
+
     const vk::PipelineTessellationStateCreateInfo tessellation_state = {
         .patchControlPoints = is_rect_list ? 3U : (is_quad_list ? 4U : key.patch_control_points),
     };
@@ -127,6 +136,17 @@ GraphicsPipeline::GraphicsPipeline(
             .depthClipEnable = key.depth_clip_enable,
         },
     };
+
+    if (key.baked.enabled) {
+        auto& raster = raster_chain.get<vk::PipelineRasterizationStateCreateInfo>();
+        raster.rasterizerDiscardEnable = key.baked.discard;
+        raster.cullMode = vk::CullModeFlags{key.baked.cull_mode};
+        raster.frontFace = vk::FrontFace(key.baked.front_face);
+        raster.depthBiasEnable = key.baked.depth_bias;
+        raster.depthBiasConstantFactor = key.baked.bias_constant;
+        raster.depthBiasClamp = key.baked.bias_clamp;
+        raster.depthBiasSlopeFactor = key.baked.bias_slope;
+    }
 
     if (!instance.IsProvokingVertexSupported()) {
         raster_chain.unlink<vk::PipelineRasterizationProvokingVertexStateCreateInfoEXT>();
@@ -180,6 +200,10 @@ GraphicsPipeline::GraphicsPipeline(
         dynamic_states.push_back(vk::DynamicState::eVertexInputBindingStride);
     }
 
+    if (key.baked.enabled) {
+        dynamic_states.erase(std::remove_if(dynamic_states.begin(), dynamic_states.end(),
+                                            IsBakedDynamicState), dynamic_states.end());
+    }
     const vk::PipelineDynamicStateCreateInfo dynamic_info = {
         .dynamicStateCount = static_cast<u32>(dynamic_states.size()),
         .pDynamicStates = dynamic_states.data(),
@@ -202,6 +226,15 @@ GraphicsPipeline::GraphicsPipeline(
             .module = modules[stage],
             .pName = "main",
         });
+    } else if(geometry_expansion) {
+        if(!preloading) {
+            const auto& fs_info=runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
+            sdata.tcs=Shader::Backend::SPIRV::EmitAuxilaryTessShader(
+                is_rect_list ? AuxShaderType::RectListGS : AuxShaderType::QuadListGS,fs_info);
+        }
+        shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
+            .stage=vk::ShaderStageFlagBits::eGeometry,
+            .module=CompileSPV(sdata.tcs,instance.GetDevice()),.pName="main"});
     }
     stage = u32(Shader::SwStage::TessellationControl);
     if (infos[stage]) {
@@ -210,7 +243,7 @@ GraphicsPipeline::GraphicsPipeline(
             .module = modules[stage],
             .pName = "main",
         });
-    } else if (is_rect_list || is_quad_list) {
+    } else if ((is_rect_list || is_quad_list)&&!geometry_expansion) {
         const auto type = is_quad_list ? AuxShaderType::QuadListTCS : AuxShaderType::RectListTCS;
         if (!preloading) {
             const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
@@ -229,7 +262,7 @@ GraphicsPipeline::GraphicsPipeline(
             .module = modules[stage],
             .pName = "main",
         });
-    } else if (is_rect_list || is_quad_list) {
+    } else if ((is_rect_list || is_quad_list)&&!geometry_expansion) {
         if (!preloading) {
             const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
             sdata.tes = Shader::Backend::SPIRV::EmitAuxilaryTessShader(
@@ -410,9 +443,19 @@ GraphicsPipeline::GraphicsPipeline(
         .blendConstants = std::array{1.0f, 1.0f, 1.0f, 1.0f},
     };
 
-    // Required by spec unless VK_EXT_extended_dynamic_state3 is supported.
-    // In practice, we use dynamic state for all of it.
-    constexpr vk::PipelineDepthStencilStateCreateInfo depth_stencil_info = {};
+    // Other drivers keep this state dynamic. Dozen receives the keyed static values so
+    // constructing this pipeline also compiles its D3D12 PSO on the compiler/warm-up worker.
+    const vk::PipelineDepthStencilStateCreateInfo depth_stencil_info = {
+        .depthTestEnable = key.baked.depth_test,
+        .depthWriteEnable = key.baked.depth_write,
+        .depthCompareOp = vk::CompareOp(key.baked.depth_compare),
+        .depthBoundsTestEnable = key.baked.depth_bounds,
+        .stencilTestEnable = key.baked.stencil_test,
+        .front = key.baked.front,
+        .back = key.baked.back,
+        .minDepthBounds = 0.f,
+        .maxDepthBounds = 1.f,
+    };
 
     const vk::GraphicsPipelineCreateInfo pipeline_info = {
         .pNext = &pipeline_rendering_ci,
@@ -425,7 +468,8 @@ GraphicsPipeline::GraphicsPipeline(
         .pRasterizationState = &raster_chain.get(),
         .pMultisampleState = &sdata.multisampling,
         .pDepthStencilState =
-            !instance.IsExtendedDynamicState3Supported() ? &depth_stencil_info : nullptr,
+            key.baked.enabled || !instance.IsExtendedDynamicState3Supported()
+                ? &depth_stencil_info : nullptr,
         .pColorBlendState = &color_blending,
         .pDynamicState = &dynamic_info,
         .layout = *pipeline_layout,
@@ -530,7 +574,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
             bindings.push_back({
                 .binding = binding++,
                 .descriptorType = vk::DescriptorType::eStorageBuffer,
-                .descriptorCount = 1,
+                .descriptorCount = buffer.buffer_type == Shader::BufferType::DmaBuffers ? Shader::NUM_DMA_BUFFERS : 1u,
                 .stageFlags = stage_bit,
             });
         }

@@ -119,6 +119,10 @@ U32 IREmitter::GetUserData(IR::ScalarReg reg) {
     return Inst<U32>(Opcode::GetUserData, reg);
 }
 
+U32 IREmitter::OfflineConstant(u32 value, u32 slot) {
+    return Inst<U32>(Opcode::OfflineConstant, Imm32(value), Imm32(slot));
+}
+
 template <>
 U32 IREmitter::GetScalarReg(IR::ScalarReg reg) {
     ASSERT(static_cast<u32>(reg) < IR::NumScalarRegs);

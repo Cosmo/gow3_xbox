@@ -31,6 +31,9 @@ uint64_t Ticks(const FILETIME& time) {
 // any vendor). Negative until the second sample or without the counters.
 class GpuUsage {
 public:
+#ifdef GOW3_UWP
+    float Percent() { return -1.0f; }
+#else
     GpuUsage() {
         if (PdhOpenQueryW(nullptr, 0, &query) != ERROR_SUCCESS) {
             query = nullptr;
@@ -77,6 +80,7 @@ private:
     PDH_HCOUNTER counter = nullptr;
     std::wstring pid;
     std::vector<unsigned char> buffer;
+#endif
 };
 
 void Run(const Vulkan::Instance* instance) {

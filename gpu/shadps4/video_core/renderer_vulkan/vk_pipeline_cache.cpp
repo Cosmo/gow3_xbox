@@ -11,6 +11,7 @@
 #include <string>
 #include <unordered_set>
 #include "spartanport_threads.h"
+#include "gow3_precompile.h"
 
 #include "common/hash.h"
 #include "common/thread.h"
@@ -83,7 +84,12 @@ constexpr static auto SpirvVersion1_6 = 0x00010600U;
 
 constexpr static std::array DescriptorHeapSizes = {
     vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 512},
-    vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 8192},
+    vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer,
+#ifdef GOW3_UWP
+                          16384},
+#else
+                          8192},
+#endif
     vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 8192},
     vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 1024},
     vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1024},
@@ -331,7 +337,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .max_viewport_width = instance.GetMaxViewportWidth(),
         .max_viewport_height = instance.GetMaxViewportHeight(),
         .max_shared_memory_size = instance.MaxComputeSharedMemorySize(),
-        .supported_spirv = SpirvVersion1_6,
+        .supported_spirv = instance.ApiVersion() >= VK_API_VERSION_1_3 ? SpirvVersion1_6 : 0x00010500,
         .subgroup_size = instance.SubgroupSize(),
         .sparse_page_shift = sparse_page_shift,
         .support_int8 = instance.IsShaderInt8Supported(),
@@ -339,6 +345,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .support_int64 = instance.IsShaderInt64Supported(),
         .support_float16 = instance.IsShaderFloat16Supported(),
         .support_float64 = instance.IsShaderFloat64Supported(),
+        .support_demote = instance.ApiVersion() >= VK_API_VERSION_1_3,
         .supports_denorm_behavior_independence =
             vk12_props.denormBehaviorIndependence != vk::ShaderFloatControlsIndependence::eNone,
         .supports_rounding_mode_independence =
@@ -398,8 +405,17 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     // spartanport: the compiler threads always exist; the in-game menu switches async compilation live
     // (SpartanSettings::async_shaders, SPARTAN_ASYNC_SHADERS at start).
     {
+#ifdef GOW3_UWP
+        // Xbox shares its 5 GiB budget with the game and driver. Avoid six simultaneous IR/DXIL
+        // builds and a large backlog when a particle effect introduces several new shaders.
+        const auto count = std::clamp(SpartanThreads::Available() / 2, 1u, 2u);
+        const unsigned capture_count = 1;
+        const size_t compile_capacity = 16;
+#else
         const auto count = std::clamp(SpartanThreads::Available() / 2, 1u, 6u);
         const auto capture_count = std::min(2u, std::max(1u, SpartanThreads::Available() / 4));
+        const size_t compile_capacity = 64;
+#endif
         for (unsigned i = 0; i < count; ++i) {
             auto [result, worker_cache] = instance.GetDevice().createPipelineCacheUnique({});
             ASSERT_MSG(result == vk::Result::eSuccess, "Failed to create compiler pipeline cache");
@@ -409,7 +425,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             Common::SetCurrentThreadName(("spartanport:ShaderCapture" + std::to_string(index)).c_str());
             Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
         });
-        compiler = std::make_unique<AsyncCompiler>(count, 64, [](unsigned index) {
+        compiler = std::make_unique<AsyncCompiler>(count, compile_capacity, [](unsigned index) {
             Common::SetCurrentThreadName(("spartanport:ShaderCompile" + std::to_string(index)).c_str());
             Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
         });
@@ -488,14 +504,14 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
     AsyncJob<bool> capture_job;
     if (!capture_job.Start(*capture_compiler, [this, build, binding] {
         PhaseTimer capture{g_spartanport_capture_ns};
-        auto [pools, reused] = compiler_pools.Acquire();
-        build->pools = std::move(pools);
-        if (reused) {
-            ++g_spartanport_pool_reuses;
+        if (!Gow3Precompile::TryLoad(build->info,build->runtime,build->code,profile,build->binary,binding)) {
+            auto [pools, reused] = compiler_pools.Acquire();
+            build->pools = std::move(pools);
+            if (reused) ++g_spartanport_pool_reuses;
+            // spartanport: the GPU thread waits until all guest reads and specialization are captured.
+            build->ir.emplace(Shader::TranslateProgram(build->code, *build->pools, build->info,
+                                                       build->runtime, profile));
         }
-        // spartanport: the GPU thread waits until all guest reads and specialization are captured.
-        build->ir.emplace(Shader::TranslateProgram(build->code, *build->pools, build->info,
-                                                   build->runtime, profile));
         build->spec = Shader::StageSpecialization(build->info, build->runtime, profile, binding);
         build->fetch.Capture(build->info);
         return true;
@@ -520,8 +536,10 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
     const bool queued = build->job.Start(*compiler, [this, build] {
         PhaseTimer compile{g_spartanport_async_ns};
         Shader::Gcn::ScopedFetchShaderSnapshot snapshot{build->fetch};
-        auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, build->runtime, *build->ir,
-                                                    build->binding);
+        auto spv = std::move(build->binary);
+        if (spv.empty()) spv = Shader::Backend::SPIRV::EmitSPIRV(profile, build->runtime, *build->ir,
+                                                               build->binding);
+        else build->info.AddBindings(build->binding);
         DumpShader(build->code, build->info.pgm_hash, build->info.hw_stage, build->permutation, "bin");
         DumpShader(spv, build->info.pgm_hash, build->info.hw_stage, build->permutation, "spv");
         auto patch = GetShaderPatch(build->info.pgm_hash, build->info.hw_stage,
@@ -530,7 +548,7 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
                                     instance.GetDevice());
         build->binary = std::move(spv);
         build->ir.reset();
-        compiler_pools.Recycle(std::move(build->pools));
+        if (build->pools) compiler_pools.Recycle(std::move(build->pools));
         return build;
     }, true);
     if (queued) {
@@ -818,6 +836,16 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     std::memset(&sel.graphics_key, 0, sizeof(GraphicsPipelineKey));
     const auto& regs = (*sel.regs);
     auto& key = sel.graphics_key;
+
+    static const bool bake_states = [&] {
+        const char* env = std::getenv("SPARTAN_BAKED_PIPELINES");
+        return instance.GetDriverID() == vk::DriverId::eMesaDozen && !(env && env[0] == '0');
+    }();
+    if (bake_states) {
+        key.baked = GetBakedGraphicsState(regs, instance.IsListRestartSupported(),
+                                         instance.IsPatchListRestartSupported(),
+                                         instance.IsDepthBoundsSupported(), LightingTest::Current().bias);
+    }
 
     // spartanport: a depth/stencil buffer that cannot affect the draw is not attached: on the PC a
     // smaller one would crop a full-screen pass (eltutz, vk_depth_stencil_state.h).
@@ -1143,8 +1171,14 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
     CompileTimer timer;
 
-    const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
-    auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    std::vector<u32> spv;
+    if (Gow3Precompile::TryLoad(info, runtime_info, code, profile, spv, binding)) {
+        std::printf("Precompiled asset shader hit: %016llx (%zu words)\n", info.pgm_hash, spv.size());
+        info.AddBindings(binding);
+    } else {
+        const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
+        spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    }
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     vk::ShaderModule module;
@@ -1365,6 +1399,9 @@ void PipelineCache::DumpShader(std::span<const u32> code, u64 hash, Shader::HwSt
         std::filesystem::create_directories(dump_dir);
     }
     const auto filename = fmt::format("{}.{}", GetShaderName(stage, hash, perm_idx), ext);
+#ifdef GOW3_UWP
+    std::fprintf(stderr,"UWP shader dump: %s (%zu bytes)\n",filename.c_str(),code.size_bytes());
+#endif
     const auto file = IOFile{dump_dir / filename, FileAccessMode::Create};
     file.WriteSpan(code);
 }

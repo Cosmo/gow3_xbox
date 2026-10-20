@@ -219,6 +219,10 @@ static void StartProfileWriter() {
 #endif
 
 extern "C" int spartanportgpu_init(const SpartanGpuConfig* config) {
+    // UWP reads its private settings after CRT initialization. Refresh diagnostics before
+    // creating renderer threads; the startup environment alone can miss those overrides.
+    const char* frame_stats = std::getenv("SPARTAN_FRAME_STATS");
+    SpartanStats::enabled = frame_stats && frame_stats[0] == '1';
     SpartanSettings::Load();
 #ifdef SPARTAN_PGO_GENERATE
     StartProfileWriter();

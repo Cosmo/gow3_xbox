@@ -247,13 +247,29 @@ namespace {
 void SignalEop(const PM4CmdEventWriteEop& eop) {
     eop.SignalFence(
         [](void* address, u64 data, u32 num_bytes) {
+            const auto started = SpartanStats::enabled ? std::chrono::steady_clock::now()
+                                                   : std::chrono::steady_clock::time_point{};
             auto* memory = Core::Memory::Instance();
             SpartanWriteLog::Note(reinterpret_cast<u64>(address), &data, num_bytes, SpartanWriteLog::Fence);
             if (!memory->TryWriteBacking(address, &data, num_bytes)) {
                 memcpy(address, &data, num_bytes);
             }
+            if (SpartanStats::enabled) {
+                const double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - started).count();
+                if (ms >= 5.0) std::printf("Fence backing write: %.3f ms; %p, %u bytes\n", ms, address, num_bytes);
+            }
         },
-        [] { Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxEop); });
+        [] {
+            const auto started = SpartanStats::enabled ? std::chrono::steady_clock::now()
+                                                   : std::chrono::steady_clock::time_point{};
+            Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxEop);
+            if (SpartanStats::enabled) {
+                const double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - started).count();
+                if (ms >= 5.0) std::printf("Fence interrupt: %.3f ms\n", ms);
+            }
+        });
 }
 
 // spartanport: end-of-pipe/-shader events run in order with the draws (Rasterizer::RunInOrder: on
@@ -1250,7 +1266,17 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 // Else the value may come from a fence that thread has yet to write: let it
                 // catch up before yielding to other queues.
+                u32 wait_retries=0;
                 while (!wait_reg_mem->Test(regs.reg_array)) {
+#ifdef GOW3_UWP
+                    if(++wait_retries==100000 && EmulatorSettings.IsDumpShaders()) {
+                        const u32 current=wait_reg_mem->mem_space.Value()==PM4CmdWaitRegMem::MemSpace::Memory
+                            ? *wait_reg_mem->Address() : regs.reg_array[wait_reg_mem->Reg()];
+                        std::fprintf(stderr,"UWP GPU wait: address=%#llx value=%#x ref=%#x mask=%#x function=%u\n",
+                            wait_reg_mem->Address<u64>(),current,wait_reg_mem->ref,wait_reg_mem->mask,
+                            u32(wait_reg_mem->function.Value()));
+                    }
+#endif
                     if (rasterizer && !rasterizer->DrawPipeIdle()) {
                         rasterizer->DrainDrawPipe(static_cast<u32>(opcode));
                         continue;

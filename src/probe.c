@@ -15,7 +15,7 @@
 #include "damage_hook.h"
 #include "menu_hook.h"
 #include "gpu/spartanportgpu.h"
-#if !defined(__x86_64__) || !defined(__GNUC__)
+#if (!defined(__x86_64__) && !defined(_M_X64)) || (!defined(__GNUC__) && !defined(__clang__))
 #error This prototype requires x86-64 GCC or Clang (including MinGW).
 #endif
 #ifdef _WIN32
@@ -52,7 +52,7 @@ static void loader_report_hook(void) {
 }
 int vulkan_smoke(void);
 
-static void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
+static _Noreturn void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
 static uint64_t read64(FILE *f) {
     unsigned char b[8];
     if (fread(b, 1, 8, f) != 8) fail("truncated boot file");
@@ -146,6 +146,32 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
     fprintf(stderr,"  rax=%016llx rbx=%016llx rcx=%016llx rdx=%016llx\n  rsi=%016llx rdi=%016llx rbp=%016llx rsp=%016llx\n",
             c->Rax,c->Rbx,c->Rcx,c->Rdx,c->Rsi,c->Rdi,c->Rbp,c->Rsp);
     if (gpu_enabled) spartanportgpu_dump_guest_writes(info);
+    uintptr_t stack_return=0;
+    SIZE_T stack_bytes=0;
+    if(ReadProcessMemory(GetCurrentProcess(),(void *)(uintptr_t)c->Rsp,&stack_return,sizeof(stack_return),&stack_bytes)&&stack_bytes==sizeof(stack_return)) {
+        describe_address(where,sizeof(where),stack_return);
+        fprintf(stderr,"  stack return: %s\n",where);
+    }
+#ifdef GOW3_UWP
+    CONTEXT unwind=*c;
+    for(unsigned depth=0;depth<24&&unwind.Rip;++depth) {
+        DWORD64 base=0,establisher=0;
+        void *handler_data=NULL;
+        PRUNTIME_FUNCTION function=RtlLookupFunctionEntry(unwind.Rip,&base,NULL);
+        DWORD64 previous_stack=unwind.Rsp;
+        if(function) RtlVirtualUnwind(UNW_FLAG_NHANDLER,base,unwind.Rip,function,&unwind,
+                                     &handler_data,&establisher,NULL);
+        else {
+            SIZE_T got=0;
+            if(!ReadProcessMemory(GetCurrentProcess(),(void *)(uintptr_t)unwind.Rsp,
+                                  &unwind.Rip,sizeof(unwind.Rip),&got)||got!=sizeof(unwind.Rip)) break;
+            unwind.Rsp+=sizeof(unwind.Rip);
+        }
+        if(unwind.Rsp<=previous_stack) break;
+        describe_address(where,sizeof(where),(uintptr_t)unwind.Rip);
+        fprintf(stderr,"  native #%u %s\n",depth,where);
+    }
+#endif
     /* rbp chain (guest and host code keep frame pointers). */
     uintptr_t rbp=(uintptr_t)c->Rbp;
     for (int depth=0; depth<24 && rbp; ++depth) {
@@ -183,7 +209,16 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
         }
     }
     if (code==EXCEPTION_ACCESS_VIOLATION && record->NumberParameters>=2) {
-        /* GPU page tracking (write-protected guest pages) is resolved first. */
+#ifdef GOW3_UWP
+        /* A reserved UWP page must exist before GPU tracking can resolve its access.
+         * Otherwise a successful GPU write-fault handler retries the untouched page. */
+        uintptr_t fault_pc=(uintptr_t)info->ContextRecord->Rip;
+        int guest_code=image && fault_pc-(uintptr_t)image<0x20000000;
+        for(uint64_t m=0;m<module_count&&!guest_code;++m)
+            guest_code=fault_pc>=modules[m].base && fault_pc-modules[m].base<modules[m].size;
+        if (runtime_memory_handle_commit_fault_at((uintptr_t)record->ExceptionInformation[1],(int)record->ExceptionInformation[0],guest_code)) return EXCEPTION_CONTINUE_EXECUTION;
+#endif
+        /* GPU page tracking resolves protection faults on committed guest pages. */
         if (gpu_enabled && spartanportgpu_handle_fault(info,(void *)record->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;
         if (runtime_fault_recover) {
             /* A speculative guest memory read (GPU draw preparation) faulted: the thread resumes
@@ -728,7 +763,10 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
  * released before the new process opens its own. */
 void runtime_restart(void) {
     fflush(NULL);
-#ifdef _WIN32
+#ifdef GOW3_UWP
+    fputs("STOP: restart is not available in the UWP loader milestone\n",stderr);
+    _exit(21);
+#elif defined(_WIN32)
     /* run.py sets SPARTAN_RESTART_COMMAND: the launch command line, started again (new patches). */
     const char *command=getenv("SPARTAN_RESTART_COMMAND");
     puts("Runtime: restarting through run.py");
@@ -777,8 +815,18 @@ static int cpu_supported(char *missing, size_t size) {
     return 1;
 }
 
+#ifdef GOW3_UWP
+int gow3_probe_main(int argc, char **argv) {
+#else
 int main(int argc, char **argv) {
+#endif
     setvbuf(stdout, NULL, _IONBF, 0);
+#ifdef GOW3_UWP
+    if (argc==2 && !strcmp(argv[1],"--memory-selftest")) {
+        AddVectoredExceptionHandler(1,vectored_fault);
+        return runtime_memory_selftest();
+    }
+#endif
 #ifndef _WIN32
     /* Keep host heap objects handed to the guest (thread handles, TLS) in the
        non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */
@@ -801,7 +849,14 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
     /* The PS4 user range must stay free of host allocations (GPU driver, heaps), and the guest
      * TCB needs one of the 64 TEB TLS slots before DLLs (Vulkan drivers) take them. */
+#ifndef GOW3_UWP
     runtime_memory_reserve();
+#else
+    /* A UWP host already owns pages in this interval. Defer the desktop pool's
+     * reservation until its first allocation, so the CPU loader can be diagnosed
+     * independently. Xbox guest-memory mapping is the next milestone. */
+    puts("UWP milestone: large guest-pool reservation deferred until first guest allocation");
+#endif
     runtime_thread_tcb_offset();
 #endif
     int cpu_only = 0, strict_imports = 0, check_imports = 0;

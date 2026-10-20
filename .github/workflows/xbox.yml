@@ -1,0 +1,202 @@
+name: Xbox build
+
+# Builds God of War 3 Launcher for the Xbox Series X|S in Developer Mode (xbox/README.md): Dozen from the Mesa fork, then the
+# launcher and its signed package, published as a pre-release with the install steps when asked. The package holds no game
+# code. It runs only when started: Actions > Xbox build > Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Publish the package as a pre-release (otherwise it is only a download of this run)
+        type: boolean
+        default: true
+      title:
+        description: "The release's title (empty: God of War 3 Launcher <version>)"
+        type: string
+        required: false
+      whats_new:
+        description: "What's new, for the top of the release notes: points separated by | (empty: none)"
+        type: string
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  # The Mesa fork with the Dozen changes the launcher is tested with.
+  MESA_REPOSITORY: Cosmo/mesa_ai_slop_version
+  MESA_COMMIT: 82804960ac7919b24dbf27d1cec2b4d637573731
+  # dxil.dll: DirectX Shader Compiler v1.9.2609.
+  DXC_URL: https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/dxc_2026_09_29.zip
+  DXC_SHA256: ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1
+
+jobs:
+  dozen:
+    name: Dozen for UWP
+    # Visual Studio 2022: Mesa is built with MSVC 14.44, because MSVC 19.51 (Visual Studio 2026) miscompiles it.
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\dozen
+          key: dozen-uwp-${{ env.MESA_COMMIT }}-msvc14.44
+
+      - name: Checkout Mesa fork
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MESA_REPOSITORY }}
+          ref: ${{ env.MESA_COMMIT }}
+          path: mesa
+          fetch-depth: 1
+
+      # The options of the fork's own UWP build: release, no asserts, static CRT, desktop DLLs delay-loaded.
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --quiet meson==1.12.1 ninja==1.13.2 Mako==1.4.3 PyYAML==6.0.3 packaging==26.3
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not (Get-ChildItem "$vs\VC\Tools\MSVC" -Directory | Where-Object Name -like '14.44.*')) {
+            Start-Process -Wait -FilePath "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe" -ArgumentList `
+              'modify', '--installPath', "`"$vs`"", '--add', 'Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64', '--quiet', '--norestart', '--nocache'
+          }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -DevCmdArguments '-arch=x64 -host_arch=x64 -vcvars_ver=14.44' -SkipAutomaticLocation | Out-Null
+          $delayLoad = "['/DELAYLOAD:user32.dll', '/DELAYLOAD:gdi32.dll', '/DELAYLOAD:shell32.dll', '/DELAYLOAD:version.dll', 'delayimp.lib']"
+          meson setup build mesa --backend=ninja -Dbuildtype=release -Dplatforms=windows -Dgallium-drivers= `
+            -Dvulkan-drivers=microsoft-experimental -Dllvm=disabled -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=false `
+            -Dgles1=disabled -Dgles2=disabled -Dspirv-tools=disabled -Dmicrosoft-clc=disabled -Dbuild-tests=false -Dvideo-codecs= `
+            -Dzlib=disabled -Dzstd=disabled -Dexpat=disabled -Db_ndebug=true -Db_vscrt=mt -Dmin-windows-version=10 `
+            "-Dc_link_args=$delayLoad" "-Dcpp_link_args=$delayLoad"
+          meson compile -C build
+          $out = "$env:RUNNER_TEMP\dozen"
+          New-Item -ItemType Directory $out -Force | Out-Null
+          Copy-Item build\src\microsoft\vulkan\vulkan_dzn.dll, mesa\licenses\MIT $out
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: dozen-uwp
+          path: ${{ runner.temp }}\dozen\
+          if-no-files-found: error
+
+  xbox:
+    name: Xbox package
+    needs: dozen
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Git settings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Dozen
+        uses: actions/download-artifact@v4
+        with:
+          name: dozen-uwp
+          path: ${{ runner.temp }}\dozen
+
+      - name: DXC
+        run: |
+          $zip = "$env:RUNNER_TEMP\dxc.zip"
+          Invoke-WebRequest $env:DXC_URL -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $env:DXC_SHA256) { throw 'DXC download does not match its SHA-256' }
+          Expand-Archive $zip "$env:RUNNER_TEMP\dxc"
+
+      # Pinned third-party sources and the FFmpeg and glslang builds (scripts/fetch-deps.py, build-deps.ps1).
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: xbox\.local\deps
+          key: deps-vs2026-${{ hashFiles('xbox/scripts/fetch-deps.py', 'xbox/scripts/build-deps.ps1', 'xbox/scripts/boost-headers.py') }}
+
+      # FFmpeg's configure and make run in the runner's MSYS2; fetch-deps.py unpacks MSYS2 packages with its zstd.
+      - name: MSYS2 tools
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          C:\msys64\usr\bin\bash.exe -lc 'pacman -Sy --noconfirm --needed make diffutils zstd'
+
+      # The launcher is built with clang-cl (the game's code uses the System V ABI).
+      - name: Clang
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          if (-not (Test-Path "$vs\VC\Tools\Llvm\x64\bin\clang-cl.exe")) {
+            Start-Process -Wait -FilePath "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe" -ArgumentList `
+              'modify', '--installPath', "`"$vs`"", '--add', 'Microsoft.VisualStudio.Component.VC.Llvm.Clang', '--quiet', '--norestart', '--nocache'
+          }
+          & "$vs\VC\Tools\Llvm\x64\bin\clang-cl.exe" --version
+
+      - name: Settings
+        run: |
+          New-Item -ItemType Directory xbox\.local -Force | Out-Null
+          @{ python = 'python'; mesa_root = ''; pc_dump = ''; xbox_dump = ''
+             dozen_dll = "$env:RUNNER_TEMP\dozen\vulkan_dzn.dll"; mesa_license = "$env:RUNNER_TEMP\dozen\MIT"
+             dxc_root = "$env:RUNNER_TEMP\dxc" } | ConvertTo-Json | Set-Content xbox\.local\settings.json
+
+      - name: Build
+        run: .\xbox\scripts\build.ps1 -Graphics
+
+      - name: Package
+        id: package
+        run: |
+          $lines = .\xbox\scripts\package.ps1 -Out "$env:RUNNER_TEMP\package"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $lines
+          foreach ($line in $lines) { if ($line -match '^(version|zip)=') { $line >> $env:GITHUB_OUTPUT } }
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: GodOfWar3Launcher-${{ steps.package.outputs.version }}
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error
+
+      - name: Release
+        if: inputs.release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.package.outputs.version }}
+          ZIP: ${{ steps.package.outputs.zip }}
+          # The inputs reach the script as variables, never as its text.
+          TITLE: ${{ inputs.title }}
+          WHATS_NEW: ${{ inputs.whats_new }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $source = "https://github.com/$env:GITHUB_REPOSITORY/blob/$env:GITHUB_SHA"
+          $notes = @"
+          Alpha for the **Xbox Series X|S** in Developer Mode (not the Xbox One). It contains no game files: you need your own dump of God of War III Remastered (tested: CUSA01715).
+
+          **Install**
+          1. Unzip on a PC.
+          2. Device Portal → **Add** → the ``.appx`` and the package in ``Dependencies``.
+          3. Dev Home: set the app's type to **Game**.
+          4. Copy your dump (the folder with ``eboot.bin``, ``sce_module``, ``sce_sys`` and ``dvdroot_ps4``) to a USB drive as ``\dumps\GodOfWar3`` and connect it to the Xbox.
+          5. Start **God of War 3 Launcher**: **Prepare** (once), **Precompile shaders** (once, recommended), then **Start game**.
+
+          Installs over earlier builds and keeps your data. [Credits]($source/xbox/CREDITS.md)
+          "@
+          $whats_new = "$env:WHATS_NEW".Trim()
+          if ($whats_new -and -not $whats_new.Contains("`n")) {
+            $whats_new = ($whats_new -split '\s*\|\s*' | Where-Object { $_ } | ForEach-Object { "- $_" }) -join "`n"
+          }
+          if ($whats_new) { $notes = "**What's new**`n$whats_new`n`n---`n`n" + $notes }
+          $title = "$env:TITLE".Trim()
+          if (-not $title) { $title = "God of War 3 Launcher $env:VERSION" }
+          Set-Content "$env:RUNNER_TEMP\notes.md" $notes -Encoding utf8NoBOM
+          gh release create "alpha-$env:VERSION" $env:ZIP --target $env:GITHUB_SHA --prerelease --title $title --notes-file "$env:RUNNER_TEMP\notes.md"

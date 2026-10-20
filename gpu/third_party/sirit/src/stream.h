@@ -215,6 +215,11 @@ class Declarations {
 public:
     explicit Declarations(u32* bound) : stream{bound} {}
 
+    Id SpecConstant(Id type, u32 value) {
+        stream.Reserve(4);
+        return stream << OpId{spv::Op::OpSpecConstant, type} << value << EndOp{};
+    }
+
     void Reserve(size_t num_words) {
         return stream.Reserve(num_words);
     }

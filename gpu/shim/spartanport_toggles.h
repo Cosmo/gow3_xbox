@@ -97,7 +97,7 @@ inline std::atomic<std::uint64_t> t_resident{0}, t_protect{0}, t_image_create{0}
     t_staging{0}, t_host_wait{0}, t_copy{0}, copy_bytes{0}, t_read_faults{0}, read_faults{0},
     t_write_faults{0}, t_copy_cpu{0}, copy_sys_us{0}, copy_minflt{0}, t_gc{0}, t_readback_wait{0};
 /// Diagnostics are collected only with SPARTAN_FRAME_STATS=1.
-inline const bool enabled = [] {
+inline bool enabled = [] {
     const char* env = std::getenv("SPARTAN_FRAME_STATS");
     return env && env[0] == '1';
 }();

@@ -4,10 +4,17 @@
 #include <stdexcept>
 #include "common/assert.h"
 #include "common/logging/log.h"
+#ifdef GOW3_UWP
+#include <windows.h>
+#endif
 
 void assert_fail_impl() {
     std::fflush(stdout);
     std::fputs("STOP: GPU library assertion failed (see GPU log above)\n", stderr);
+#ifdef GOW3_UWP
+    std::fflush(stderr);
+    TerminateProcess(GetCurrentProcess(),23);
+#endif
     std::_Exit(23);
 }
 

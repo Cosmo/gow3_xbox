@@ -1,0 +1,19 @@
+#version 450
+layout(local_size_x=64) in;
+layout(set=0,binding=0,std430) readonly buffer Input { uint words[]; } inputs[128];
+layout(set=0,binding=128,std430) buffer Output { vec4 values[]; } output_data;
+layout(set=0,binding=130) uniform texture2D image_a;
+layout(set=0,binding=131) uniform sampler sampler_a;
+layout(set=0,binding=132) uniform texture2D image_b;
+layout(set=0,binding=133) uniform sampler sampler_b;
+layout(rgba8,set=0,binding=134) uniform writeonly image2D image_out;
+void main() {
+    uint index=gl_GlobalInvocationID.x;
+    if(index>=68*52) return;
+    ivec2 pixel=ivec2(index%68,index/68);
+    vec2 uv=(vec2(pixel)+0.5)/vec2(68,52);
+    output_data.values[index*3]=texelFetch(sampler2D(image_a,sampler_a),pixel,0);
+    output_data.values[index*3+1]=textureLod(sampler2D(image_b,sampler_b),uv,0.0);
+    output_data.values[index*3+2]=vec4(float(inputs[0].words[index%128]));
+    imageStore(image_out,pixel,output_data.values[index*3]);
+}

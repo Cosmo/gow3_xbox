@@ -6,6 +6,10 @@
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/singleton.h"
+#ifdef GOW3_UWP
+#include <SDL3/SDL_surface.h>
+#include "overlay.h"
+#endif
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "sdl_window.h"
@@ -15,6 +19,7 @@
 #include "spartanport_overlay.h"
 #include "spartanport_settings.h"
 #include "spartanport_graphics.h"
+#include "gow3_precompile.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_warmup_inbox.h"
@@ -303,7 +308,11 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
       swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
+#ifdef GOW3_UWP
+    const u32 num_images=std::max(3u,swapchain.GetImageCount());
+#else
     const u32 num_images = swapchain.GetImageCount();
+#endif
     const vk::Device device = instance.GetDevice();
 
     // Create presentation frames.
@@ -317,9 +326,60 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         free_queue.push(&frame);
     }
 
+#ifndef GOW3_UWP
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
+#else
+    std::puts("UWP presentation: native resolution; FSR1 and RCAS disabled");
+#endif
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     SpartanOverlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
+
+#ifdef GOW3_UWP
+    if (const char* launcher=std::getenv("SPARTAN_UWP_LAUNCHER"); launcher && *launcher=='1') {
+        std::string title="God of War III Remastered";
+        const char* automatic=std::getenv("SPARTAN_PRECOMPILE_AUTORUN");
+        bool compile_once=automatic&&*automatic=='1';
+        for (;;) {
+            int action=1;
+            if (!compile_once) {
+                SpartanOverlay::BeginChoice(title,{"Start game","Precompile shaders"},{},0);
+                action=-1;
+                while(action==-1) {
+                    // The dedicated UWP window thread already polls controller input.
+                    PresentLoadingFrame();
+                    action=SpartanOverlay::PollChoice();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                }
+                if(action==0) break;
+                if(action!=1) continue;
+            }
+            compile_once=false;
+            try {
+                const char* dump=std::getenv("SPARTAN_PRECOMPILE_DUMP");
+                if(!dump||!*dump) throw std::runtime_error("Game folder is not configured");
+                auto last=std::chrono::steady_clock::time_point{};
+                const auto result=Gow3Precompile::Prepare(dump,Gow3Precompile::CacheDirectory(),
+                    rasterizer->GetPipelineCache().GetProfile(),[&](const auto& progress) {
+                        const auto now=std::chrono::steady_clock::now();
+                        if(now-last<std::chrono::milliseconds(100)&&progress.done!=progress.total) return;
+                        last=now;
+                        SpartanOverlay::SetLoadingLabel(progress.scanning ? "Scanning game files..." :
+                            progress.vertex ? "Precompiling vertex shaders..." : "Precompiling fragment shaders...");
+                        SpartanOverlay::SetLoading(true,progress.done,progress.total);
+                        PresentLoadingFrame();
+                    });
+                title=fmt::format("{} shader entries prepared. Others compile during gameplay.{}",
+                    result.prepared_entries,result.failed ? " Some variants could not be prepared." : "");
+                std::printf("Launcher precompile: %u entries, %u variants ready\n",result.prepared_entries,result.compiled+result.already_cached);
+            } catch(const std::exception& error) {
+                title=std::string("Precompilation could not finish: ")+error.what();
+                std::printf("Launcher precompile failed: %s\n",error.what());
+            }
+            SpartanOverlay::SetLoading(false,0,0);
+            SpartanOverlay::SetLoadingLabel({});
+        }
+    }
+#endif
 
     const bool binary_cache = EmulatorSettingsImpl::Flag("SPARTAN_PIPELINE_BINARIES", true) &&
                               EmulatorSettings.IsPipelineCacheEnabled();
@@ -464,6 +524,7 @@ Frame* Presenter::PrepareLastFrame() {
     auto& scheduler = flip_scheduler;
     scheduler.EndRendering();
     const auto cmdbuf = scheduler.CommandBuffer();
+
 
     const auto frame_subresources = vk::ImageSubresourceRange{
         .aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -634,6 +695,20 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
                     vk::ImageLayout::eTransferSrcOptimal, image.info.size.width,
                     image.info.size.height, "display", frame_dump_index);
         }
+#ifdef GOW3_UWP
+        const auto base_format=image.info.pixel_format;
+        const bool rgba=base_format==vk::Format::eR8G8B8A8Unorm||base_format==vk::Format::eR8G8B8A8Srgb;
+        const bool bgra=base_format==vk::Format::eB8G8R8A8Unorm||base_format==vk::Format::eB8G8R8A8Srgb;
+        const bool requested_rgba=view_info.format==vk::Format::eR8G8B8A8Unorm||view_info.format==vk::Format::eR8G8B8A8Srgb;
+        const bool requested_bgra=view_info.format==vk::Format::eB8G8R8A8Unorm||view_info.format==vk::Format::eB8G8R8A8Srgb;
+        if((rgba&&requested_bgra)||(bgra&&requested_rgba)) {
+            const bool srgb=view_info.format==vk::Format::eR8G8B8A8Srgb||view_info.format==vk::Format::eB8G8R8A8Srgb;
+            view_info.format=rgba ? (srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm)
+                                  : (srgb ? vk::Format::eB8G8R8A8Srgb : vk::Format::eB8G8R8A8Unorm);
+            view_info.mapping.r=vk::ComponentSwizzle::eB;
+            view_info.mapping.b=vk::ComponentSwizzle::eR;
+        }
+#endif
         image_view = *image.FindView(view_info).image_view;
         image_size = vk::Extent2D{image.info.size.width, image.info.size.height};
         runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -656,8 +731,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         fsr_settings.use_rcas &&
         SpartanGraphics::FsrPassRuns(fsr_settings.enable, true, int(image_size.width), int(image_size.height),
                                   int(frame->width), int(frame->height));
+#ifndef GOW3_UWP
     image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
                                  fsr_settings, frame->is_hdr);
+#else
+    SpartanSettings::Get().rcas_applied=false;
+#endif
 
     // Vulkan has no sRGB variant of the 10-bit format, so an A2R10G10B10Srgb buffer reaches
     // the post process pass still sRGB encoded and has to be decoded there instead.
@@ -822,8 +901,33 @@ void Presenter::PresentLoadingFrame() {
     barrier(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal,
             vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eColorAttachmentWrite);
     SpartanOverlay::Render(cmdbuf, swapchain.ImageView(), extent);
-    barrier(vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::ePresentSrcKHR,
+#ifdef GOW3_UWP
+    // The existing opt-in frame capture also covers launcher/progress frames.
+    std::unique_ptr<VideoCore::UniqueBuffer> capture;
+    VmaAllocationInfo allocation{};
+    static auto last_capture=std::chrono::steady_clock::time_point{};
+    const auto now=std::chrono::steady_clock::now();
+    const char* enabled=std::getenv("SPARTAN_UWP_CAPTURE");
+    const char* user=std::getenv("SPARTAN_GPU_USER_DIR");
+    if(enabled&&*enabled=='1'&&user&&now-last_capture>=std::chrono::seconds(1)) {
+        last_capture=now;
+        capture=std::make_unique<VideoCore::UniqueBuffer>(instance.GetDevice(),instance.GetAllocator());
+        vk::BufferCreateInfo buffer_info{.size=u64(extent.width)*extent.height*4,
+            .usage=vk::BufferUsageFlagBits::eTransferDst,.sharingMode=vk::SharingMode::eExclusive};
+        capture->Create(buffer_info,VideoCore::MemoryType::HostCached,&allocation);
+        barrier(vk::ImageLayout::eColorAttachmentOptimal,vk::ImageLayout::eTransferSrcOptimal,
+            vk::AccessFlagBits::eColorAttachmentWrite,vk::AccessFlagBits::eTransferRead);
+        cmdbuf.copyImageToBuffer(image,vk::ImageLayout::eTransferSrcOptimal,capture->buffer,
+            vk::BufferImageCopy{.imageSubresource=MakeImageSubresourceLayers(),
+                .imageExtent={extent.width,extent.height,1}});
+        barrier(vk::ImageLayout::eTransferSrcOptimal,Swapchain::PresentLayout(),
+            vk::AccessFlagBits::eTransferRead,{});
+    } else
+#endif
+    {
+    barrier(vk::ImageLayout::eColorAttachmentOptimal, Swapchain::PresentLayout(),
             vk::AccessFlagBits::eColorAttachmentWrite, {});
+    }
     SubmitInfo info{};
     info.AddWait(swapchain.GetImageAcquiredSemaphore());
     info.AddSignal(swapchain.GetPresentReadySemaphore());
@@ -834,9 +938,22 @@ void Presenter::PresentLoadingFrame() {
     }
     // A few frames a second during start-up: waiting keeps semaphores and the swapchain simple.
     present_scheduler.Finish();
+#ifdef GOW3_UWP
+    if(capture) {
+        vmaInvalidateAllocation(instance.GetAllocator(),capture->allocation,0,VK_WHOLE_SIZE);
+        if(auto surface=SDL_CreateSurfaceFrom(extent.width,extent.height,SDL_PIXELFORMAT_RGBA32,
+                allocation.pMappedData,extent.width*4)) {
+            SDL_SaveBMP(surface,(std::string(user)+"/uwp-launcher.bmp").c_str());
+            SDL_DestroySurface(surface);
+        }
+    }
+#endif
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
+#ifdef GOW3_UWP
+    if(is_game_frame&&!is_reusing_frame) Gow3Uwp::Overlay::Presented();
+#endif
     // Free the frame for reuse
     const auto free_frame = [&] {
         if (!is_reusing_frame) {
@@ -881,6 +998,27 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     const vk::Image swapchain_image = swapchain.Image();
     auto& scheduler = present_scheduler;
     const auto cmdbuf = scheduler.CommandBuffer();
+
+#ifdef GOW3_UWP
+    std::unique_ptr<VideoCore::UniqueBuffer> capture_buffer;
+    const auto capture_extent=swapchain.GetExtent();
+    VmaAllocationInfo capture_allocation{};
+    static u64 capture_index=0;
+    static auto last_capture=std::chrono::steady_clock::time_point{};
+    const auto capture_time=std::chrono::steady_clock::now();
+    const char* capture_enabled=std::getenv("SPARTAN_UWP_CAPTURE");
+    const bool capture_frame=capture_enabled && capture_enabled[0]=='1' &&
+        is_game_frame && !is_reusing_frame &&
+        capture_time-last_capture>=std::chrono::seconds(5);
+    if(capture_frame) {
+        last_capture=capture_time;
+        ++capture_index;
+        capture_buffer=std::make_unique<VideoCore::UniqueBuffer>(instance.GetDevice(),instance.GetAllocator());
+        vk::BufferCreateInfo buffer_info{.size=u64(capture_extent.width)*capture_extent.height*4,
+            .usage=vk::BufferUsageFlagBits::eTransferDst,.sharingMode=vk::SharingMode::eExclusive};
+        capture_buffer->Create(buffer_info,VideoCore::MemoryType::HostCached,&capture_allocation);
+    }
+#endif
 
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
         cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{
@@ -948,7 +1086,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
                                          : vk::AccessFlagBits::eNone,
                 .oldLayout = vk::ImageLayout::eTransferDstOptimal,
                 .newLayout = overlay ? vk::ImageLayout::eColorAttachmentOptimal
-                                     : vk::ImageLayout::ePresentSrcKHR,
+                                     : Swapchain::PresentLayout(),
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = swapchain_image,
@@ -974,7 +1112,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
                 .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
                 .dstAccessMask = vk::AccessFlagBits::eNone,
                 .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
-                .newLayout = vk::ImageLayout::ePresentSrcKHR,
+                .newLayout = Swapchain::PresentLayout(),
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = swapchain_image,
@@ -984,6 +1122,18 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
                                    vk::PipelineStageFlagBits::eBottomOfPipe,
                                    vk::DependencyFlagBits::eByRegion, {}, {}, to_present);
         }
+#ifdef GOW3_UWP
+        if(capture_buffer) {
+            const vk::MemoryBarrier capture_ready{
+                .srcAccessMask=vk::AccessFlagBits::eMemoryWrite,
+                .dstAccessMask=vk::AccessFlagBits::eTransferRead};
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,
+                {},capture_ready,{},{});
+            const vk::BufferImageCopy copy{.imageSubresource={vk::ImageAspectFlagBits::eColor,0,0,1},
+                .imageExtent={capture_extent.width,capture_extent.height,1}};
+            cmdbuf.copyImageToBuffer(swapchain_image,Swapchain::PresentLayout(),capture_buffer->buffer,copy);
+        }
+#endif
     }
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
         cmdbuf.endDebugUtilsLabelEXT();
@@ -1006,6 +1156,32 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         }
     }
 
+#ifdef GOW3_UWP
+    if(capture_buffer) {
+        scheduler.Finish();
+        vmaInvalidateAllocation(instance.GetAllocator(),capture_buffer->allocation,0,VK_WHOLE_SIZE);
+        if(const char* user=std::getenv("SPARTAN_GPU_USER_DIR")) {
+            const std::string path=std::string(user)+"/uwp-frame.bmp";
+            if(auto surface=SDL_CreateSurfaceFrom(capture_extent.width,capture_extent.height,SDL_PIXELFORMAT_RGBA32,
+                capture_allocation.pMappedData,capture_extent.width*4)) {
+                if(SDL_SaveBMP(surface,path.c_str()))
+                    std::printf("Captured UWP frame %llu: %s\n",capture_index,path.c_str());
+                if(capture_index<=32) {
+                    static const auto sequence=std::unique_ptr<SDL_Surface,decltype(&SDL_DestroySurface)>(
+                        SDL_CreateSurface(1280,1440,SDL_PIXELFORMAT_RGBA32),SDL_DestroySurface);
+                    if(sequence) {
+                        const int tile=static_cast<int>(capture_index-1);
+                        SDL_Rect destination{(tile%4)*320,(tile/4)*180,320,180};
+                        SDL_SetSurfaceBlendMode(surface,SDL_BLENDMODE_NONE);
+                        SDL_BlitSurfaceScaled(surface,nullptr,sequence.get(),&destination,SDL_SCALEMODE_NEAREST);
+                        SDL_SaveBMP(sequence.get(),(std::string(user)+"/uwp-startup-sequence.bmp").c_str());
+                    }
+                }
+                SDL_DestroySurface(surface);
+            }
+        }
+    }
+#endif
     free_frame();
     if (!is_reusing_frame && is_game_frame) {
         DebugState.IncFlipFrameNum();

@@ -57,6 +57,15 @@ Id EmitGetUserData(EmitContext& ctx, IR::ScalarReg reg) {
     return ud_reg;
 }
 
+Id EmitOfflineConstant(EmitContext& ctx, u32 value, u32 slot) {
+    const auto [entry, inserted]=ctx.offline_constants.try_emplace(slot);
+    if(inserted) {
+        entry->second=ctx.SpecConstant(ctx.U32[1],value);
+        ctx.Decorate(entry->second,spv::Decoration::SpecId,slot);
+    }
+    return entry->second;
+}
+
 Id EmitReadConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
     const u32 flatbuf_off_dw = inst->Flags<u32>();
     if (!EmulatorSettings.IsDirectMemoryAccessEnabled()) {

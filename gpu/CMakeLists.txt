@@ -9,7 +9,11 @@ if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 # Frame pointers keep the loader's thread dumps (watchdog, SIGUSR2 sampling) walkable.
-add_compile_options(-fno-omit-frame-pointer)
+if(MSVC)
+    add_compile_options(/Oy-)
+else()
+    add_compile_options(-fno-omit-frame-pointer)
+endif()
 
 # spartanport: link-time optimization (SPARTAN_LTO, default on) and profile-guided optimization
 # (SPARTAN_PGO: off, generate = instrumented build writing into SPARTAN_PGO_DIR, use = build with that
@@ -40,6 +44,9 @@ elseif (SPARTAN_PGO STREQUAL "use")
                         -fprofile-correction -Wno-missing-profile -Wno-coverage-mismatch)
 endif()
 
+if(GOW3_UWP)
+    include(../xbox/graphics/dependencies.cmake)
+else()
 find_package(Vulkan REQUIRED)
 find_package(fmt REQUIRED)
 find_package(Boost REQUIRED)
@@ -79,14 +86,36 @@ if (NOT miniz_FOUND)
 endif()
 find_package(Zydis REQUIRED)
 find_program(GLSLANG_COMPILER NAMES glslang glslangValidator REQUIRED)
+endif()
+
+if(GOW3_UWP)
+    add_library(magic_enum INTERFACE)
+    add_library(magic_enum::magic_enum ALIAS magic_enum)
+    target_include_directories(magic_enum INTERFACE third_party/magic_enum/include third_party/magic_enum/include/magic_enum)
+    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    add_subdirectory(third_party/miniz EXCLUDE_FROM_ALL)
+    unset(CMAKE_POLICY_VERSION_MINIMUM)
+    add_library(miniz::miniz ALIAS miniz)
+endif()
 
 set(SIRIT_USE_SYSTEM_SPIRV_HEADERS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/sirit EXCLUDE_FROM_ALL)
+if(GOW3_UWP)
+    get_target_property(sirit_options sirit COMPILE_OPTIONS)
+    list(REMOVE_ITEM sirit_options /MP)
+    set_target_properties(sirit PROPERTIES COMPILE_OPTIONS "${sirit_options}")
+endif()
 
 # spartanport: FSR 3.1 temporal upscaling / frame generation, native Vulkan (MIT, FireBurn/FSR-Vulkan).
+if(NOT GOW3_UWP)
 set(FFX_VK_PORTABLE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(FFX_VK_PORTABLE_BUILD_PROBE OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/fsr-vulkan EXCLUDE_FROM_ALL)
+endif()
 
 # Host shaders -> headers (same scheme as shadPS4's host_shaders/CMakeLists.txt).
 set(SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/host_shaders)
@@ -94,13 +123,18 @@ set(SHADER_INCLUDE ${CMAKE_CURRENT_BINARY_DIR}/include)
 set(SHADER_DIR ${SHADER_INCLUDE}/video_core/host_shaders)
 set(SHADER_HEADERS "")
 function(add_host_shader FILENAME SHADER_NAME)
+    if(GOW3_UWP)
+        set(shader_api vulkan1.2)
+    else()
+        set(shader_api vulkan1.3)
+    endif()
     set(OUT ${SHADER_DIR}/${SHADER_NAME}.h)
     string(TOUPPER ${SHADER_NAME} SYMBOL)
     set(DEFINES ${ARGN})
     list(TRANSFORM DEFINES PREPEND "-D")
     add_custom_command(OUTPUT ${OUT}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_DIR}
-        COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 -o ${OUT} --vn ${SYMBOL} ${DEFINES} ${SHADER_SRC}/${FILENAME}
+        COMMAND ${GLSLANG_COMPILER} --target-env ${shader_api} -o ${OUT} --vn ${SYMBOL} ${DEFINES} ${SHADER_SRC}/${FILENAME}
         COMMAND ${CMAKE_COMMAND} "-DHEADER_FILE=${OUT}" -P ${SHADER_SRC}/AddShaderHeaderInclude.cmake
         DEPENDS ${SHADER_SRC}/${FILENAME} VERBATIM)
     set(SHADER_HEADERS ${SHADER_HEADERS} ${OUT} PARENT_SCOPE)
@@ -129,6 +163,9 @@ foreach(BPP IN ITEMS 8 16 32 64 96 128)
     add_host_shader(tiling.comp tiling_micro_${BPP}_comp BITS_PER_PIXEL=${BPP} IS_MACRO_TILED=0)
     add_host_shader(tiling.comp tiling_macro_${BPP}_comp BITS_PER_PIXEL=${BPP} IS_MACRO_TILED=1)
 endforeach()
+if(GOW3_UWP)
+    add_host_shader(../../../../xbox/graphics/texture_sample.comp uwp_texture_sample_comp)
+endif()
 add_custom_target(host_shaders DEPENDS ${SHADER_HEADERS})
 
 file(GLOB_RECURSE VIDEO_CORE CONFIGURE_DEPENDS shadps4/video_core/*.cpp)
@@ -141,8 +178,18 @@ set(COMMON
     shadps4/common/string_util.cpp shadps4/common/thread.cpp shadps4/common/signal_context.cpp
     shim/common/logging/log.cpp)
 file(GLOB AVPLAYER CONFIGURE_DEPENDS shadps4/core/libraries/avplayer/*.cpp)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale libswresample)
+if(NOT GOW3_UWP)
+    pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale libswresample)
+endif()
 file(GLOB SHIM_SOURCES CONFIGURE_DEPENDS shim/*.cpp shim/*/*.cpp)
+if(GOW3_UWP)
+    list(FILTER VIDEO_CORE EXCLUDE REGEX "vk_temporal_upscaler\\.cpp$")
+    list(FILTER VIDEO_CORE EXCLUDE REGEX "vk_fsr4\\.cpp$|/fsr411/")
+    list(FILTER VIDEO_CORE EXCLUDE REGEX "vk_swapchain\\.cpp$")
+    list(FILTER SHIM_SOURCES EXCLUDE REGEX "shim/window\\.cpp$")
+    list(APPEND VIDEO_CORE ../xbox/graphics/native_resolution.cpp ../xbox/graphics/swapchain.cpp ../xbox/graphics/dense_buffers.cpp)
+    list(APPEND SHIM_SOURCES ../xbox/graphics/window.cpp)
+endif()
 # Windows: a DLL cannot leave the runtime_* symbols for spartanport-probe.exe to resolve, so the
 # library is static there and linked into the executable.
 if (WIN32)
@@ -162,18 +209,28 @@ target_sources(spartanportgpu PRIVATE third_party/imgui/imgui.cpp third_party/im
     third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
     third_party/imgui/backends/imgui_impl_vulkan.cpp)
 target_include_directories(spartanportgpu PRIVATE third_party/imgui third_party/imgui/backends)
+if(GOW3_UWP)
+    set_source_files_properties(third_party/imgui/imgui.cpp PROPERTIES
+        COMPILE_DEFINITIONS "IMGUI_DISABLE_WIN32_DEFAULT_CLIPBOARD_FUNCTIONS;IMGUI_DISABLE_WIN32_DEFAULT_IME_FUNCTIONS")
+endif()
 target_compile_definitions(spartanportgpu PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES
     SPARTAN_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf")
 set_source_files_properties(shim/spartanport_overlay.cpp PROPERTIES
     OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf)
 target_include_directories(spartanportgpu PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
 target_compile_definitions(spartanportgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
-target_compile_options(spartanportgpu PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
+if(MSVC)
+    target_compile_options(spartanportgpu PRIVATE /EHsc /clang:-Wno-deprecated-declarations /clang:-Wno-missing-field-initializers)
+else()
+    target_compile_options(spartanportgpu PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
+endif()
 # Runtime symbols (runtime_memory_*, runtime_process_*) resolve against spartanport-probe.
 if (NOT WIN32)
     target_link_options(spartanportgpu PRIVATE -Wl,--allow-shlib-undefined)
 endif()
-target_link_libraries(spartanportgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan)
+if(NOT GOW3_UWP)
+    target_link_libraries(spartanportgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan)
+endif()
 target_link_libraries(spartanportgpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
     tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit)
 target_include_directories(spartanportgpu PRIVATE third_party/xbyak)
@@ -181,15 +238,38 @@ if (WIN32)
     # Guest code is entered with the System V ABI; NOMINMAX/WIN32_LEAN_AND_MEAN keep
     # <windows.h> out of the way of std::min/max and the Vulkan/SDL headers.
     target_compile_definitions(spartanportgpu PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_compile_options(spartanportgpu PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/spartanport_win_compat.h)
-    target_link_libraries(spartanportgpu PUBLIC Vulkan::Vulkan ws2_32 bcrypt ntdll synchronization winmm pdh)
+    if(GOW3_UWP)
+        target_compile_options(spartanportgpu PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/../xbox/graphics/compat.h")
+        target_include_directories(spartanportgpu PRIVATE ../xbox/platform ../xbox/platform/compat ../xbox/graphics "${GOW3_PTHREAD}/include")
+        target_compile_definitions(spartanportgpu PRIVATE GOW3_UWP _TIMESPEC_DEFINED)
+        target_link_libraries(spartanportgpu PUBLIC WindowsApp)
+    else()
+        target_compile_options(spartanportgpu PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/spartanport_win_compat.h)
+        target_link_libraries(spartanportgpu PUBLIC Vulkan::Vulkan ws2_32 bcrypt ntdll synchronization winmm pdh)
+    endif()
 else()
     target_link_libraries(spartanportgpu PUBLIC PkgConfig::X11)
 endif()
 
+if(GOW3_UWP)
+    # Headless desktop research tool, never included in an app/package build.
+    add_executable(spartanport-offline-shader EXCLUDE_FROM_ALL
+        ../tools/offline_shaders/compile.cpp
+        ../tools/offline_shaders/native_checks.cpp
+        shadps4/shader_recompiler/ir/passes/flatten_extended_userdata_pass.cpp)
+    target_compile_definitions(spartanport-offline-shader PRIVATE GOW3_OFFLINE_COMPILER NDEBUG _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(spartanport-offline-shader PRIVATE /EHsc
+        "/FI${CMAKE_CURRENT_SOURCE_DIR}/../xbox/graphics/compat.h")
+    target_include_directories(spartanport-offline-shader PRIVATE shim shadps4 third_party/gcn/include
+        third_party/xbyak ../xbox/platform ../xbox/platform/compat
+        "${GOW3_PTHREAD}/include")
+    target_link_libraries(spartanport-offline-shader PRIVATE spartanportgpu)
+    return()
+endif()
+
 # spartanport (Windows): spartanportgpu is a static library there, so the loader and the HLE runtime are
 # linked here, where CMake knows its dependencies (build.sh builds them with ninja).
-if (WIN32)
+if (WIN32 AND NOT GOW3_UWP)
     enable_language(RC)
     file(GLOB SPARTAN_RUNTIME CONFIGURE_DEPENDS ../src/runtime*.c)
     file(GLOB SPARTAN_ATRAC9 CONFIGURE_DEPENDS ../third_party/LibAtrac9/C/src/*.c)

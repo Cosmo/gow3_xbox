@@ -36,7 +36,7 @@ namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 static constexpr u32 ShaderBinaryVersion = 7u; // spartanport: interpolated integer fix (Pascal)
 static constexpr u32 ShaderMetaVersion = 7u; // spartanport: ImageResource::needs_native
-static constexpr u32 PipelineKeyVersion = 5u; // spartanport: Info layout (ImageResource::needs_native)
+static constexpr u32 PipelineKeyVersion = 6u; // spartanport: keyed static Dozen graphics state
 } // namespace Serialization
 
 namespace Vulkan {
@@ -518,7 +518,11 @@ struct PipelineCache::WarmupPool {
             return 0;
         }
         const u32 cores = std::max(1u, std::thread::hardware_concurrency());
+#ifdef GOW3_UWP
+        return WarmupThreadCount(cores);
+#else
         return std::clamp(cores > 2 ? cores - 2 : 1u, 1u, 6u);
+#endif
     }
 
     std::atomic<u32> built{0};

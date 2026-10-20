@@ -3,11 +3,24 @@
 #include "spartanport_settings.h"
 #include <cstring>
 #include <cstdint>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include "../../src/cheat_hook.h"
 
 extern "C" float __attribute__((sysv_abi)) spartanport_orbs_gain(void* player, float requested) {
     float balance;
     std::memcpy(&balance, static_cast<unsigned char*>(player) + 0x1e8, sizeof(balance));
+    static const bool trace = [] {
+        const char* env = std::getenv("SPARTAN_RECORDER_TIMINGS");
+        return env && env[0] == '1';
+    }();
+    if (trace && requested > balance) {
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::printf("Orb gain: t=%lld ms, %.1f -> %.1f\n", static_cast<long long>(now),
+                    double(balance), double(requested));
+    }
     const auto& settings = SpartanSettings::Get();
     if ((settings.cheats_supported.load() & (1u << SPARTAN_CHEAT_ORBS)) &&
         settings.cheats[SPARTAN_CHEAT_ORBS].load()) {

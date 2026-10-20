@@ -554,6 +554,7 @@ IR::U32 CalculateBufferAddress(IR::IREmitter& ir, const IR::Inst& inst, const In
     const u32 shift = BufferAddressShift(inst, data_format);
     const u32 mask = (1 << shift) - 1;
     const IR::U32 soffset = IR::GetBufferSOffsetArg(&inst);
+    const bool parametric=info.offline_memory&&info.offline_memory->Parametric();
 
     // If address calculation is of the form "index * const_stride + offset" with offset constant
     // and both const_stride and offset are divisible with the element size, apply shift directly.
@@ -563,7 +564,13 @@ IR::U32 CalculateBufferAddress(IR::IREmitter& ir, const IR::Inst& inst, const In
         if ((total_offset & mask) == 0) {
             // buffer_offset = index * (const_stride >> shift) + (offset >> shift)
             const IR::U32 index = IR::GetBufferIndexArg(&inst);
-            return ir.IAdd(ir.IMul(index, ir.Imm32(stride >> shift)),
+            // Preserve the ordinary compiler's order of integer operations.
+            // (index * stride) >> shift differs after u32 wraparound from
+            // index * (stride >> shift). Prepared lookup requires aligned strides.
+            const auto step = parametric
+                ? IR::U32{ir.ShiftRightLogical(ir.OfflineConstant(stride, OfflineSlot::Stride + inst.Arg(0).U32()), ir.Imm32(shift))}
+                : ir.Imm32(stride >> shift);
+            return ir.IAdd(ir.IMul(index, step),
                            ir.Imm32(total_offset >> shift));
         }
     }
@@ -587,7 +594,8 @@ IR::U32 CalculateBufferAddress(IR::IREmitter& ir, const IR::Inst& inst, const In
         const IR::U32 voffset = IR::GetBufferVOffsetArg(&inst);
         offset = ir.IAdd(offset, voffset);
     }
-    const IR::U32 const_stride = ir.Imm32(stride);
+    const IR::U32 const_stride = parametric && inst_info.index_enable
+        ? ir.OfflineConstant(stride,OfflineSlot::Stride+inst.Arg(0).U32()) : ir.Imm32(stride);
     IR::U32 buffer_offset;
     if (buffer.swizzle_enable) {
         const IR::U32 const_index_stride = ir.Imm32(buffer.GetIndexStride());
@@ -751,13 +759,23 @@ void PatchImageSampleArgs(IR::Inst& inst, Info& info, const ImageResource& image
     const bool is_msaa = view_type == AmdGpu::ImageType::Color2DMsaa ||
                          view_type == AmdGpu::ImageType::Color2DMsaaArray;
     const bool unnormalized = sampler.force_unnormalized || inst_info.is_unnormalized;
-    const bool needs_dimentions = (!is_msaa && unnormalized) || (is_msaa && !unnormalized);
+    const bool parametric=info.offline_memory&&info.offline_memory->Parametric();
+    const bool parameterize_coords=parametric&&!inst_info.is_unnormalized;
+    const u32 sampler_index=(handle.U32()>>16)&0xffff;
+    const auto unnormalized_flag=parameterize_coords
+        ? ir.INotEqual(ir.OfflineConstant(u32(sampler.force_unnormalized),OfflineSlot::Normalize+sampler_index),ir.Imm32(0u))
+        : ir.Imm1(unnormalized);
+    const bool needs_dimentions = parameterize_coords || (!is_msaa && unnormalized) || (is_msaa && !unnormalized);
     const auto dimensions =
         needs_dimentions ? ir.ImageQueryDimension(handle, ir.Imm32(0u), ir.Imm1(false), inst_info)
                          : IR::Value{};
     const auto get_coord = [&](u32 coord_idx, u32 dim_idx) -> IR::Value {
         const auto coord = get_addr_reg(coord_idx);
         if (is_msaa) {
+            if(parameterize_coords) {
+                const auto dim=ir.ConvertUToF(32,32,IR::U32{ir.CompositeExtract(dimensions,dim_idx)});
+                return ir.Select(unnormalized_flag,ir.ConvertFToU(32,coord),ir.ConvertFToU(32,ir.FPMul(coord,dim)));
+            }
             // For MSAA images preserve the unnormalized coord or manually unnormalize it
             if (unnormalized) {
                 return ir.ConvertFToU(32, coord);
@@ -767,11 +785,13 @@ void PatchImageSampleArgs(IR::Inst& inst, Info& info, const ImageResource& image
                 return ir.ConvertFToU(32, ir.FPMul(coord, dim));
             }
         }
-        if (unnormalized) {
+        if (unnormalized || parameterize_coords) {
             // Normalize the coordinate for sampling, dividing by its corresponding dimension.
             const auto dim =
                 ir.ConvertUToF(32, 32, IR::U32{ir.CompositeExtract(dimensions, dim_idx)});
-            return ir.FPDiv(coord, dim);
+            const auto normalized=ir.FPDiv(coord, dim);
+            if(parameterize_coords) return ir.Select(unnormalized_flag,normalized,coord);
+            return normalized;
         }
         return coord;
     };
@@ -835,7 +855,15 @@ void PatchImageSampleArgs(IR::Inst& inst, Info& info, const ImageResource& image
     }();
 
     auto converted = ApplyReadNumberConversionVec4(ir, texel, image.GetNumberConversion());
-    if (sampler.force_degamma && image.GetNumberFmt() != AmdGpu::NumberFormat::Srgb) {
+    if(parametric) {
+        const auto gamma=ApplyForceDegamma(ir,texel);
+        const auto enabled=ir.INotEqual(ir.OfflineConstant(
+            u32(sampler.force_degamma&&image.GetNumberFmt()!=AmdGpu::NumberFormat::Srgb),
+            OfflineSlot::Gamma+sampler_index*64+(handle.U32()&0xffff)),ir.Imm32(0u));
+        std::array<IR::Value,4> selected;
+        for(u32 i=0;i<4;++i) selected[i]=ir.Select(enabled,ir.CompositeExtract(gamma,i),ir.CompositeExtract(converted,i));
+        converted=ir.CompositeConstruct(selected[0],selected[1],selected[2],selected[3]);
+    } else if (sampler.force_degamma && image.GetNumberFmt() != AmdGpu::NumberFormat::Srgb) {
         converted = ApplyForceDegamma(ir, texel);
     }
     inst.ReplaceUsesWith(converted);

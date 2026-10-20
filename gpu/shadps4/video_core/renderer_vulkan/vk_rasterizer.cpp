@@ -2152,7 +2152,11 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 // Permutations compiled without enabled planes never read the buffer, so the
                 // declared binding is satisfied with a null descriptor instead of a copy.
                 if (Regs().clipper_control.user_clip_plane_enable == 0) {
+#ifdef GOW3_UWP
+                    buffer_infos.emplace_back(buffer_cache.GetNullBuffer()->Handle(),0,64_KB);
+#else
                     buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
+#endif
                 } else {
                     auto& vk_buffer = buffer_cache.GetStreamBuffer();
                     std::array<float, AmdGpu::NUM_CLIP_PLANES * 4> planes{};
@@ -2167,6 +2171,11 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                     const u64 offset = vk_buffer.Copy(planes.data(), ubo_size, alignment);
                     buffer_infos.emplace_back(vk_buffer.Handle(), offset, ubo_size);
                 }
+#ifdef GOW3_UWP
+            } else if (desc.buffer_type == Shader::BufferType::DmaBuffers) {
+                auto views=buffer_cache.GetDmaViews();
+                buffer_infos.insert(buffer_infos.end(),views.begin(),views.end());
+#endif
             } else if (desc.buffer_type == Shader::BufferType::BdaPagetable) {
                 const auto* bda_buffer = buffer_cache.GetBdaPageTableBuffer();
                 buffer_infos.emplace_back(bda_buffer->Handle(), 0, bda_buffer->SizeBytes());
@@ -2210,7 +2219,11 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                                      memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()));
             }
             if (vsharp.base_address == 0 || vsharp.GetSize() == 0) {
+#ifdef GOW3_UWP
+                buffer_infos.emplace_back(buffer_cache.GetNullBuffer()->Handle(),0,64_KB);
+#else
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
+#endif
             } else {
                 const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
                 if (size != vsharp.GetSize()) {
@@ -2240,9 +2253,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         set_write.dstSet = VK_NULL_HANDLE;
         set_write.dstBinding = binding.unified++;
         set_write.dstArrayElement = 0;
-        set_write.descriptorCount = 1;
+        set_write.descriptorCount = desc.buffer_type == Shader::BufferType::DmaBuffers ? Shader::NUM_DMA_BUFFERS : 1u;
         set_write.descriptorType = vk::DescriptorType::eStorageBuffer;
-        set_write.pBufferInfo = &buffer_infos.back();
+        set_write.pBufferInfo = buffer_infos.data() + buffer_infos.size() - set_write.descriptorCount;
         ++binding.buffer;
     }
 }
@@ -2456,7 +2469,11 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         const auto& desc = *desc_ptr;
         bool is_storage = desc.type == VideoCore::TextureCache::BindingType::Storage;
         if (!image_id) {
+#ifdef GOW3_UWP
+            image_infos.emplace_back(VK_NULL_HANDLE,texture_cache.NullView(),vk::ImageLayout::eGeneral);
+#else
             image_infos.emplace_back(VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
+#endif
         } else {
             if (auto& old_image = texture_cache.GetImage(image_id);
                 old_image.binding.needs_rebind) {
@@ -2680,7 +2697,11 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
     for (u32 i = 0; i < count; ++i) {
         const auto& entry = set.entries[i];
         if (!entry.id) {
+#ifdef GOW3_UWP
+            image_infos.emplace_back(VK_NULL_HANDLE,texture_cache.NullView(),vk::ImageLayout::eGeneral);
+#else
             image_infos.emplace_back(VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
+#endif
             continue;
         }
         texture_cache.MarkFound(entry.id);

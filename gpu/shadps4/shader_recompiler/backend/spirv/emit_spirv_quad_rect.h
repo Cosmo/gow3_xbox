@@ -16,6 +16,8 @@ enum class AuxShaderType : u32 {
     RectListTCS,
     QuadListTCS,
     PassthroughTES,
+    RectListGS,
+    QuadListGS,
 };
 
 [[nodiscard]] std::vector<u32> EmitAuxilaryTessShader(AuxShaderType type,

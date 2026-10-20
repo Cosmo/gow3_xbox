@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <queue>
+#include <stdexcept>
 #include <xbyak/xbyak.h>
 #include <xbyak/xbyak_util.h>
 #include "common/arch.h"
@@ -638,7 +639,55 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     PopPtr(c);
 }
 
+static void GenerateOfflineSrt(Info& info, PassInfo& pass_info) {
+    info.offline_reads.clear();
+    info.flattened_ud_buf.assign(NUM_USER_DATA_REGS, 0);
+    std::copy(info.user_data.begin(), info.user_data.end(), info.flattened_ud_buf.begin());
+    pass_info.dst_off_dw = NUM_USER_DATA_REGS;
+    const auto memory = info.offline_memory;
+    auto pointer = [&](u64 address) {
+        return (u64(memory->Read32(address)) | (u64(memory->Read32(address + 4)) << 32)) &
+               0xffffffffffffULL;
+    };
+    auto visit = [&](auto&& self, IR::Inst* tree, u64 address, std::vector<u32> path) -> void {
+        if (path.size() > 16)
+            throw std::runtime_error("Offline descriptor table nesting exceeds limit");
+        const auto* uses = pass_info.GetUsesAsPointer(tree);
+        if (!uses)
+            throw std::runtime_error("Offline descriptor pointer has no uses");
+        for (auto [offset, use] : *uses) {
+            if (!offset.IsImmediate())
+                throw std::runtime_error("Offline descriptor table has a dynamic offset");
+            if (info.offline_reads.size() >= 16384)
+                throw std::runtime_error("Offline descriptor layout exceeds limit");
+            info.flattened_ud_buf.push_back(memory->Read32(address + u64(offset.U32()) * 4));
+            info.offline_reads.push_back({path, offset.U32(), pass_info.dst_off_dw});
+            SetFlatbufOffset(use, pass_info.dst_off_dw++);
+        }
+        for (auto [offset, use] : *uses) {
+            if (pass_info.GetUsesAsPointer(use)) {
+                auto child = path;
+                child.push_back(offset.U32());
+                self(self, use, pointer(address + u64(offset.U32()) * 4), std::move(child));
+            }
+        }
+    };
+    for (const auto& [reg, tree] : pass_info.srt_roots) {
+        const auto index = static_cast<u32>(reg);
+        if (index + 1 >= info.user_data.size())
+            throw std::runtime_error("Offline descriptor root outside user data");
+        const u64 address = (u64(info.user_data[index]) | (u64(info.user_data[index + 1]) << 32)) &
+                            0xffffffffffffULL;
+        visit(visit, tree, address, {index});
+    }
+    info.srt_info.flattened_bufsize_dw = pass_info.dst_off_dw;
+}
+
 static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
+    if (info.offline_memory) {
+        GenerateOfflineSrt(info, pass_info);
+        return;
+    }
     Xbyak::CodeGenerator& c = g_srt_codegen;
 
     if (pass_info.srt_roots.empty()) {
@@ -748,6 +797,78 @@ void SimplifyReadConstAddressAdd(IR::Inst& inst) {
 }
 
 } // Anonymous namespace
+
+} // namespace Shader::Optimization
+
+namespace Shader {
+PersistentSrtInfo RegisterSrtReadPlan(const SrtReadPlan& plan, u32 flat_words, u32 user_words) {
+    if (user_words > 16 || flat_words < 16 || flat_words > 16400 || plan.size() > 16384)
+        throw std::runtime_error("Invalid prepared descriptor layout");
+    std::string key(reinterpret_cast<const char*>(&flat_words), sizeof(flat_words));
+    std::vector<bool> destinations(flat_words);
+    for (const auto& read : plan) {
+        if (read.pointers.empty() || read.pointers.size() > 16 ||
+            read.pointers[0] + 1 >= user_words || read.destination < 16 ||
+            read.destination >= flat_words || destinations[read.destination] ||
+            read.offset > 1024 * 1024)
+            throw std::runtime_error("Invalid prepared descriptor read");
+        destinations[read.destination] = true;
+        const u32 count = read.pointers.size();
+        key.append(reinterpret_cast<const char*>(&count), 4);
+        for (u32 offset : read.pointers) {
+            if (offset > 1024 * 1024) throw std::runtime_error("Prepared pointer offset exceeds limit");
+            key.append(reinterpret_cast<const char*>(&offset), 4);
+        }
+        key.append(reinterpret_cast<const char*>(&read.offset), 4);
+        key.append(reinterpret_cast<const char*>(&read.destination), 4);
+    }
+    PersistentSrtInfo result;
+    result.flattened_bufsize_dw = flat_words;
+    if (plan.empty()) {
+        if (flat_words != 16) throw std::runtime_error("Prepared layout has missing reads");
+        return result;
+    }
+    if (std::count(destinations.begin() + 16, destinations.end(), true) != flat_words - 16)
+        throw std::runtime_error("Prepared layout has holes");
+    std::scoped_lock lock{g_srt_codegen_mutex};
+    static std::unordered_map<std::string, PersistentSrtInfo> registered;
+    if (auto found = registered.find(key); found != registered.end()) return found->second;
+    auto& c = g_srt_codegen;
+    // A rejected template must leave room for the ordinary shader compiler.
+    if (c.getSize() + plan.size() * 512 + 128 > 30_MB)
+        throw std::runtime_error("Prepared descriptor walker pool is full");
+    if (!g_srt_codegen_start) {
+        g_srt_codegen_start = c.getCurr();
+        Core::Signals::Instance()->RegisterAccessViolationHandler(SrtWalkerSignalHandler, 1);
+    }
+    result.walker_func = c.getCurr<PFN_SrtWalker>();
+    c.mov(r11, rdi);
+    for (const auto& read : plan) {
+        Xbyak::Label absent, done;
+        c.mov(rdi, r11);
+        for (u32 offset : read.pointers) {
+            c.mov(rdi, ptr[rdi + u64(offset) * 4]);
+            c.mov(r10, 0xffffffffffffULL);
+            c.and_(rdi, r10);
+            c.test(rdi, rdi);
+            c.jz(absent, Xbyak::CodeGenerator::T_NEAR);
+        }
+        c.mov(r10d, dword[rdi + u64(read.offset) * 4]);
+        c.jmp(done, Xbyak::CodeGenerator::T_NEAR);
+        c.L(absent);
+        c.xor_(r10d, r10d);
+        c.L(done);
+        c.mov(dword[rsi + u64(read.destination) * 4], r10d);
+    }
+    c.ret();
+    c.ready();
+    result.walker_func_size = c.getCurr() - reinterpret_cast<const u8*>(result.walker_func);
+    registered.emplace(std::move(key), result);
+    return result;
+}
+} // namespace Shader
+
+namespace Shader::Optimization {
 
 void FlattenExtendedUserdataPass(IR::Program& program) {
     auto& post_order = program.post_order_blocks;
@@ -861,7 +982,15 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
         SetFlatbufOffset(readconst, GetFlatbufOffset(original));
     }
 
+#ifdef GOW3_OFFLINE_COMPILER
+    // Compiler-only replay: offsets are regenerated, descriptors come from a
+    // captured flat table. Never follow pointers from the previous game process.
+    if (program.info.flattened_ud_buf.size() != program.info.srt_info.flattened_bufsize_dw) {
+        throw std::runtime_error("Offline descriptor snapshot does not match regenerated layout");
+    }
+#else
     program.info.RefreshFlatBuf();
+#endif
 }
 
 } // namespace Shader::Optimization

@@ -16,9 +16,13 @@ inline bool UseOnDemandPipelines(bool binary_cache, bool supported, bool capture
     return binary_cache && supported && !capture_only;
 }
 
-/// Warm-up threads: one on four cores or fewer, otherwise all but two, at most six.
+/// Warm-up threads: one on four cores or fewer; UWP caps concurrent driver builds at two.
 inline unsigned WarmupThreadCount(unsigned cores) {
+#ifdef GOW3_UWP
+    return cores <= 4 ? 1u : 2u;
+#else
     return cores <= 4 ? 1u : std::min(cores - 2, 6u);
+#endif
 }
 
 /// Items made on worker threads, handed to the GPU thread a few at a time so that a frame

@@ -12,6 +12,11 @@
 #include "video_core/texture_cache/image.h"
 
 #include <vk_mem_alloc.h>
+#ifdef GOW3_UWP
+extern "C" uint64_t gow3_uwp_app_memory_usage();
+extern "C" uint64_t gow3_uwp_app_memory_limit();
+extern "C" uint64_t runtime_memory_page_out(uint64_t bytes);
+#endif
 
 namespace VideoCore {
 
@@ -116,6 +121,34 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
     VmaAllocationInfo alloc_info{};
     VkResult result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image,
                                      &allocation, &alloc_info);
+#ifdef GOW3_UWP
+    for(unsigned attempt=0;result==VK_ERROR_OUT_OF_DEVICE_MEMORY && attempt<4;++attempt) {
+        const auto released=runtime_memory_page_out(UINT64_C(64)<<20);
+        if(!released) break;
+        std::printf("UWP image allocation retry %u: swap released %llu MiB\n",attempt+1,released>>20);
+        result=vmaCreateImage(allocator,&image_ci_unsafe,&alloc_ci,&unsafe_image,&allocation,&alloc_info);
+    }
+    if (result != VK_SUCCESS) {
+        std::printf("UWP image allocation failed: %ux%ux%u layers=%u mips=%u samples=%u "
+                    "format=%s app=%llu/%llu MiB result=%s\n",
+                    image_ci.extent.width, image_ci.extent.height, image_ci.extent.depth,
+                    image_ci.arrayLayers, image_ci.mipLevels, unsigned(image_ci.samples),
+                    vk::to_string(image_ci.format).c_str(),
+                    gow3_uwp_app_memory_usage() >> 20, gow3_uwp_app_memory_limit() >> 20,
+                    vk::to_string(vk::Result{result}).c_str());
+        VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+        vmaGetHeapBudgets(allocator, budgets);
+        for (unsigned heap = 0; heap < VK_MAX_MEMORY_HEAPS; ++heap) {
+            const auto& budget = budgets[heap];
+            if (budget.budget || budget.usage) {
+                std::printf("UWP heap %u: usage=%llu budget=%llu allocated=%llu reserved=%llu MiB\n",
+                            heap, budget.usage >> 20, budget.budget >> 20,
+                            budget.statistics.allocationBytes >> 20,
+                            budget.statistics.blockBytes >> 20);
+            }
+        }
+    }
+#endif
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};
@@ -146,6 +179,11 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
     }
 
     usage_flags = ImageUsageFlags(instance, info);
+#ifdef GOW3_UWP
+    if(info.props.is_block&&!instance.IsBlockTexelViewSupported()) {
+        usage_flags &= ~vk::ImageUsageFlagBits::eStorage;
+    }
+#endif
     format_features = FormatFeatureFlags(usage_flags);
     if (info.props.is_depth) {
         aspect_mask = vk::ImageAspectFlagBits::eDepth;

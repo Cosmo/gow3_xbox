@@ -16,6 +16,7 @@ static constexpr u32 NUM_IMAGES = 64;
 static constexpr u32 NUM_BUFFERS = 40;
 static constexpr u32 NUM_SAMPLERS = 16;
 static constexpr u32 NUM_FMASKS = 8;
+static constexpr u32 NUM_DMA_BUFFERS = 128;
 
 using SharpLocation = u16;
 
@@ -73,6 +74,7 @@ enum class BufferType : u8 {
     GdsBuffer,
     SharedMemory,
     ClipPlanes,
+    DmaBuffers,
 };
 
 struct BufferResource {

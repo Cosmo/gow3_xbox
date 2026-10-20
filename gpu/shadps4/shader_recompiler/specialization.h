@@ -179,6 +179,11 @@ struct StageSpecialization {
         for (const auto& desc : desc_list) {
             auto& spec = spec_list.emplace_back();
             const auto sharp = desc.GetSharp(*info);
+#ifdef GOW3_UWP
+            if constexpr(requires {sharp.GetSize();}) {
+                if(!sharp.GetSize()) {++binding;continue;}
+            }
+#endif
             if (!sharp) {
                 binding++;
                 continue;
@@ -193,6 +198,9 @@ struct StageSpecialization {
     }
 
     bool operator==(const StageSpecialization& other) const {
+#ifdef GOW3_UWP
+        if(bitset!=other.bitset) return false;
+#endif
         if (!Valid()) {
             return false;
         }
