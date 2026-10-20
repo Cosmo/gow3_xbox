@@ -582,7 +582,7 @@ std::vector<XmlElement> elements(const winrt::Windows::Data::Xml::Dom::XmlNodeLi
     for(const auto& node:list) result.push_back(node.as<XmlElement>());
     return result;
 }
-struct Meta { XmlElement element{nullptr}; std::optional<std::string> name,version,elf,enabled; };
+struct Meta { XmlElement element{nullptr}; std::optional<std::string> name,version,elf,enabled,note; };
 
 // patches.py eboot_segments and eboot_image: the PT_LOAD file bytes at their virtual addresses.
 std::vector<std::pair<uint64_t,uint64_t>> eboot_segments(View elf) {
@@ -809,6 +809,25 @@ std::vector<std::string> selected_patches(const std::vector<Meta>& metas,const s
     return result;
 }
 
+// patches.py patch_requirements: the direct memory the selected patches' notes ask for ("Requires setting DMEM
+// to N MB", on top of the retail pool), the retail pool when none does.
+constexpr int dmem_retail_mb=5056;
+int dmem_requirement(const std::vector<Meta>& metas,const std::vector<std::string>& names,const std::string& version) {
+    int dmem=0;
+    for(const auto& meta:metas) {
+        if(!meta.name||std::find(names.begin(),names.end(),*meta.name)==names.end()||meta.version!=version) continue;
+        const std::string note=meta.note.value_or("");
+        for(size_t at=note.find("DMEM to ");at!=std::string::npos;at=note.find("DMEM to ",at+1)) {
+            size_t end=at+8;
+            while(end<note.size()&&std::isdigit(uint8_t(note[end]))) ++end;
+            if(end==at+8||note.compare(end,3," MB")!=0) continue;
+            dmem=std::max(dmem,dmem_retail_mb+std::stoi(note.substr(at+8,end-at-8)));
+            break;
+        }
+    }
+    return dmem ? dmem : dmem_retail_mb;
+}
+
 Bytes compile_patches(const std::vector<Meta>& metas,const std::vector<std::string>& names,View image,
                       const std::vector<std::pair<uint64_t,uint64_t>>& segments,const char* resolution) {
     std::map<std::string,const Meta*> found;
@@ -888,11 +907,15 @@ Files Prepare(const Dump& dump,const std::string& patch_xml) {
     catch(const winrt::hresult_error& error) { fail("the patch file is not valid XML: "+winrt::to_string(error.message())); }
     std::vector<Meta> metas;
     for(const auto& element:elements(document.GetElementsByTagName(L"Metadata")))
-        metas.push_back({element,attribute(element,L"Name"),attribute(element,L"AppVer"),attribute(element,L"AppElf"),attribute(element,L"isEnabled")});
+        metas.push_back({element,attribute(element,L"Name"),attribute(element,L"AppVer"),attribute(element,L"AppElf"),
+                         attribute(element,L"isEnabled"),attribute(element,L"Note")});
     const auto segments=eboot_segments(eboot.elf);
     const Bytes image=eboot_image(eboot.elf);
-    files.patches_native=compile_patches(metas,selected_patches(metas,"01.02",""),image,segments,"native");
-    files.patches_720p=compile_patches(metas,selected_patches(metas,"01.02","Resolution Patch - 720p"),image,segments,"720p");
+    for(const char* name:Resolutions) {
+        const std::string resolution=name;
+        const auto names=selected_patches(metas,"01.02",resolution=="native" ? "" : "Resolution Patch - "+resolution);
+        files.resolutions.push_back({resolution,compile_patches(metas,names,image,segments,name),dmem_requirement(metas,names,"01.02")});
+    }
     return files;
 }
 

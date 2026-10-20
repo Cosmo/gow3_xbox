@@ -101,7 +101,9 @@ void SetOpen(bool value) {
     if (menu_open.exchange(value) == value) {
         return;
     }
+#ifndef GOW3_UWP // the Xbox has no mouse pointer to draw
     ImGui::GetIO().MouseDrawCursor = value;
+#endif
     if (value) {
         requested_tab = SpartanSettings::Get().menu_tab;
     }
@@ -197,6 +199,16 @@ static const char* PadText(const char* playstation, const char* xbox, const char
     static const char* style = std::getenv("SPARTAN_GLYPHS");
     if (!style) return playstation;
     return !std::strcmp(style, "xbox") ? xbox : !std::strcmp(style, "nintendo") ? nintendo : playstation;
+}
+
+// Settings that only take effect when the game starts: the PC restarts it, the Xbox app cannot restart itself.
+#ifdef GOW3_UWP
+constexpr const char* RestartNote = "applied at the next start";
+#else
+constexpr const char* RestartNote = "applied on restart";
+#endif
+std::string RestartSection(const char* name) {
+    return std::string(name) + " (" + RestartNote + ")";
 }
 
 // The note for the item under the mouse or the gamepad/keyboard focus, shown in the footer.
@@ -342,6 +354,7 @@ void GameTab() {
     if (BeginRows("##controller")) {
         SliderRow("Vibration", s.vibration, 0, 100, "%d%%",
                   "Strength of the controller's vibration. 0% turns it off.");
+#ifndef GOW3_UWP // the Xbox has no mouse
         SliderRow("Mouse prompt distance", s.mouse_prompt_distance, 16, 200, "%d px",
                   "With Joystick prompts on Adaptive mouse: how far the mouse moves for one step of a rotation.");
         static const char* const aim_styles[] = {"Relative", "Absolute"};
@@ -353,6 +366,7 @@ void GameTab() {
                   "L2 aim with the mouse: lower needs more mouse movement for the same stick, higher less.");
         CheckRow("Keep mouse in window", s.mouse_lock,
                  "While you play, the mouse stays in the game window; this menu and other windows get it back.");
+#endif
         ImGui::EndTable();
     }
 
@@ -403,6 +417,7 @@ void GameTab() {
 void ImageTab() {
     namespace G = SpartanGraphics;
     auto& s = SpartanSettings::Get();
+#ifndef GOW3_UWP // the Xbox shows the game full screen in step with the TV, without sharpening
     ImGui::SeparatorText("Display");
     if (BeginRows("##display")) {
         ChoiceRow("Display mode", s.display_mode, G::DisplayModeNames.data(), nullptr, G::DisplayModeCount,
@@ -426,7 +441,8 @@ void ImageTab() {
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
-    ImGui::SeparatorText("Textures (applied on restart)");
+#endif
+    ImGui::SeparatorText(RestartSection("Textures").c_str());
     if (BeginRows("##textures")) {
         static const char* const anisotropy_labels[] = {"Game default", "2x", "4x", "8x", "16x"};
         ChoiceRow("Anisotropic filtering", s.anisotropy, anisotropy_labels, G::Anisotropies.data(),
@@ -434,15 +450,19 @@ void ImageTab() {
                   "Sharper floors and walls seen at an angle. Little cost on most GPUs.");
         ImGui::EndTable();
     }
+#ifndef GOW3_UWP
     ImGui::TextDisabled("F12 saves a screenshot to the user\\screenshots folder.");
+#endif
     ImGui::SeparatorText("Information");
     if (BeginRows("##image_info")) {
         char text[96];
-        std::snprintf(text, sizeof(text), "%d x %d", iw, ih);
+        std::snprintf(text, sizeof(text), "%d x %d", int(s.image_width), int(s.image_height));
         InfoRow("Game image", text);
-        std::snprintf(text, sizeof(text), "%d x %d", ww, wh);
+#ifndef GOW3_UWP
+        std::snprintf(text, sizeof(text), "%d x %d", int(s.window_width), int(s.window_height));
         InfoRow("Window", text);
         InfoRow("Sharpening", s.rcas_applied ? "applied" : "not applied");
+#endif
         ImGui::EndTable();
     }
 }
@@ -452,6 +472,12 @@ void PerformanceTab() {
     auto& s = SpartanSettings::Get();
     ImGui::SeparatorText("Live");
     if (BeginRows("##live")) {
+#ifdef GOW3_UWP
+        // The Xbox runs the engine at 60 FPS: higher limits mean no limit.
+        static const char* const fps_labels[] = {"30", "60 (no limit)"};
+        static constexpr int fps_values[] = {30, 0};
+        ChoiceRow("Frame rate limit", s.fps_limit, fps_labels, fps_values, 2, "Caps the frame rate.");
+#else
         static const char* const fps_labels[] = {"30", "60", "100", "120", "144", "180", "240", "Unlimited"};
         ChoiceRow("Frame rate limit", s.fps_limit, fps_labels, G::FpsLimits.data(), int(G::FpsLimits.size()),
                   "Caps the frame rate. The engine frame rate (below) is the highest it can go.");
@@ -469,6 +495,7 @@ void PerformanceTab() {
         if (s.applied_engine_fps <= 60 && s.engine_fps > 60) {
             InfoRow("Engine frame rate", "60 FPS: the frame rate patch is not available for this game build");
         }
+#endif
         static const char* const queued_labels[] = {"1 (lowest latency)", "2", "Unlimited"};
         ChoiceRow("Frames queued", s.frames_queued, queued_labels, G::FramesQueued.data(),
                   int(G::FramesQueued.size()), "More frames queued: steadier FPS, slower response to input.");
@@ -476,8 +503,22 @@ void PerformanceTab() {
                  "Fewer stutters in new areas; an object or effect may appear a moment later.");
         ImGui::EndTable();
     }
+#ifdef GOW3_UWP
+    ImGui::SeparatorText("Applied at the next start");
+#else
     ImGui::SeparatorText("Applied on restart");
+#endif
     if (BeginRows("##restart")) {
+#ifdef GOW3_UWP
+        // The resolutions the Xbox app prepares patches for; it reads the choice when it starts.
+        static const char* const resolution_labels[] = {"720p · 1280 × 720", "900p · 1600 × 900",
+                                                        "1080p · 1920 × 1080 (native)", "4K · 3840 × 2160"};
+        static const int resolution_values[] = {G::ParseResolution("720p"), G::ParseResolution("900p"),
+                                                G::ParseResolution("native"), G::ParseResolution("4K")};
+        ChoiceRow("Render resolution", s.render_resolution, resolution_labels, resolution_values, 4,
+                  "The resolution the game draws at. Higher is sharper and slower; 4K may not fit in the "
+                  "Xbox's memory.");
+#else
         // The built-in sizes, then those of the enabled mods' patch files (ultrawide, for one).
         // The same labels as the launcher (graphics_options.resolution_label): name, exact size, aspect ratio.
         static const char* const builtin_labels[] = {
@@ -501,6 +542,7 @@ void PerformanceTab() {
         }
         ChoiceRow("Render resolution", s.render_resolution, resolution_labels.data(), nullptr,
                   int(resolution_labels.size()), "The resolution the game draws at. Higher is sharper and slower.");
+#endif
         CheckRow("Game reads GPU data without waiting", s.stale_readback,
                  "Big FPS gain. Switch it off if lighting or objects look wrong.");
         CheckRow("Deferred GPU readbacks", s.deferred_readback,
@@ -523,6 +565,11 @@ void OverlayTab() {
         static const char* const names[] = {"FPS", "Frametime", "Upscaler", "GPU (name and use)", "CPU (game)",
                                             "RAM (game / total)", "VRAM (used / available)"};
         for (unsigned item = 0; item < 7; ++item) {
+#ifdef GOW3_UWP
+            if (item == 2 || item == 3) {
+                continue; // the Xbox build has no upscaler and cannot read the GPU's use
+            }
+#endif
             const unsigned bit = 1u << item;
             bool on = (s.overlay_items & bit) != 0;
             if (ImGui::Checkbox(names[item], &on)) {
@@ -654,9 +701,21 @@ void Menu() {
 
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
+#ifdef GOW3_UWP // the app keeps its settings in its own storage
+    ImGui::TextDisabled("%s", footer_help ? footer_help : "LB / RB: switch tabs. RS + LT: close.");
+#else
     ImGui::TextDisabled("%s", footer_help ? footer_help : PadText("L1 / R1 or Q / E: switch tabs. Settings are saved in spartanport.ini.", "LB / RB or Q / E: switch tabs. Settings are saved in spartanport.ini.", "L / R or Q / E: switch tabs. Settings are saved in spartanport.ini."));
+#endif
     ImGui::PopTextWrapPos();
     if (const int changes = RestartChanges()) {
+#ifdef GOW3_UWP
+        // The app cannot restart itself; it reads these settings the next time it starts.
+        ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%d change%s take%s effect the next time you start the app.",
+                           changes, changes == 1 ? "" : "s", changes == 1 ? "s" : "");
+    } else {
+        ImGui::NewLine();
+    }
+#else
         ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%d change%s need%s a restart (unsaved progress is lost).",
                            changes, changes == 1 ? "" : "s", changes == 1 ? "s" : "");
         ImGui::SameLine();
@@ -672,6 +731,7 @@ void Menu() {
     } else {
         ImGui::NewLine();
     }
+#endif
     const float close_width = ImGui::CalcTextSize("Close").x + ImGui::GetStyle().FramePadding.x * 2;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - close_width);
     if (ImGui::Button("Close")) {

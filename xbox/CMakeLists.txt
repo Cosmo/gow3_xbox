@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
 project(gow3_uwp LANGUAGES C CXX)
-add_executable(uwp-overlay-chord-test EXCLUDE_FROM_ALL ../tests/test_uwp_overlay_chord.cpp)
 option(GOW3_BUILD_GRAPHICS "Build the existing renderer for UWP" OFF)
 option(GOW3_LINK_RENDERER "Connect the existing renderer to the UWP loader" ON)
 set(CMAKE_C_STANDARD 11)

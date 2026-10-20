@@ -14,6 +14,11 @@
 #include <psapi.h>
 #endif
 
+#ifdef GOW3_UWP
+extern "C" uint64_t gow3_uwp_app_memory_usage();
+extern "C" uint64_t gow3_uwp_app_memory_limit();
+#endif
+
 namespace SpartanPerfStats {
 
 namespace {
@@ -101,6 +106,11 @@ void Run(const Vulkan::Instance* instance) {
             last_process = process;
             last_wall = wall;
         }
+#ifdef GOW3_UWP
+        // On the Xbox what counts is the app's memory against its budget (5 GiB on the Series X).
+        s.ram_used_gb = double(gow3_uwp_app_memory_usage()) / GiB;
+        s.ram_total_gb = double(gow3_uwp_app_memory_limit()) / GiB;
+#else
         PROCESS_MEMORY_COUNTERS memory{};
         if (K32GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory))) {
             s.ram_used_gb = double(memory.WorkingSetSize) / GiB;
@@ -109,6 +119,7 @@ void Run(const Vulkan::Instance* instance) {
         if (GlobalMemoryStatusEx(&system)) {
             s.ram_total_gb = double(system.ullTotalPhys) / GiB;
         }
+#endif
         if (instance->CanReportMemoryUsage()) {
             s.vram_used_gb = double(instance->GetDeviceMemoryUsage()) / GiB;
             s.vram_total_gb = double(instance->GetDeviceMemoryBudgetNow()) / GiB;

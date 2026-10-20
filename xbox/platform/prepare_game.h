@@ -8,7 +8,11 @@
 namespace Gow3Prepare {
 using Bytes=std::vector<uint8_t>;
 struct Dump { Bytes eboot,libc,fios,sfo; };
-struct Files { Bytes boot,content,patches_native,patches_720p; };
+// The render resolutions the Xbox app offers (SpartanGraphics names; "native" is 1080p).
+inline constexpr const char* Resolutions[]={"native","720p","900p","4K"};
+// patches-<name>.bin and the direct memory (MiB) its patches' notes ask for.
+struct Resolution { std::string name; Bytes patches; int dmem_mb; };
+struct Files { Bytes boot,content; std::vector<Resolution> resolutions; };
 // Empty when param.sfo names God of War III Remastered, else what is wrong, for the player.
 std::string CheckTitle(const Bytes& sfo);
 // Throws std::runtime_error with the reason when the dump or the patch file cannot be used.

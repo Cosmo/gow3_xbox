@@ -17,6 +17,7 @@
 #include <cstring>
 #include <io.h>
 #include <fstream>
+#include <map>
 #include <future>
 #include <memory>
 #include <string>
@@ -48,7 +49,6 @@ static winrt::agile_ref<winrt::Windows::UI::Core::CoreWindow> core_window;
 static std::atomic<bool> window_closed{false};
 #ifdef GOW3_BUILD_GRAPHICS
 #include "../graphics/present_bridge.h"
-#include "../graphics/overlay.h"
 #include "input.h"
 extern "C" IUnknown* gow3_uwp_core_window() {
     auto window=core_window.get();
@@ -176,11 +176,12 @@ static bool prepare_game(std::string const& dump,std::string const& prepared,boo
     char marker[96];
     std::snprintf(marker,sizeof marker,"gow3-uwp-prepared " GOW3_PREPARED_FORMAT "\nsource %016llx\n",
                   static_cast<unsigned long long>(Gow3Prepare::Fingerprint(files,patches)));
-    const char* outputs[]={"boot-linked.bin","content.bin","patches-native.bin","patches-720p.bin"};
+    std::vector<std::string> outputs={"boot-linked.bin","content.bin","resolutions.txt"};
+    for(auto name:Gow3Prepare::Resolutions) outputs.push_back(std::string("patches-")+name+".bin");
     if(!always) {
         Gow3Prepare::Bytes current;
         bool ready=read_file(prepared+"\\format.txt",current)&&std::string(current.begin(),current.end())==marker;
-        for(auto name:outputs) {
+        for(auto const& name:outputs) {
             FILE *probe=ready ? gow3_uwp_fopen((prepared+"\\"+name).c_str(),"rb") : nullptr;
             ready=probe!=nullptr;
             if(probe) std::fclose(probe);
@@ -195,10 +196,18 @@ static bool prepare_game(std::string const& dump,std::string const& prepared,boo
     try { result=Gow3Prepare::Prepare(files,patches); }
     catch(std::exception const& error) { stop(std::string("Preparing the game files failed: ")+error.what(),player); return false; }
     DeleteFileFromAppW(winrt::to_hstring(prepared+"\\format.txt").c_str());
-    const std::pair<const char*,Gow3Prepare::Bytes const*> written[]={{"boot-linked.bin",&result.boot},{"content.bin",&result.content},
-        {"patches-native.bin",&result.patches_native},{"patches-720p.bin",&result.patches_720p}};
-    for(auto [name,data]:written) {
-        if(!write_file(prepared+"\\"+name,*data)) { stop(std::string("Writing the prepared game file ")+name+" failed.",player); return false; }
+    // resolutions.txt: one "<resolution> <direct memory MiB>" line per patches-<resolution>.bin.
+    std::string memory;
+    std::vector<std::pair<std::string,Gow3Prepare::Bytes>> written;
+    written.emplace_back("boot-linked.bin",std::move(result.boot));
+    written.emplace_back("content.bin",std::move(result.content));
+    for(auto& resolution:result.resolutions) {
+        memory+=resolution.name+" "+std::to_string(resolution.dmem_mb)+"\n";
+        written.emplace_back("patches-"+resolution.name+".bin",std::move(resolution.patches));
+    }
+    written.emplace_back("resolutions.txt",Gow3Prepare::Bytes(memory.begin(),memory.end()));
+    for(auto const& [name,data]:written) {
+        if(!write_file(prepared+"\\"+name,data)) { stop("Writing the prepared game file "+name+" failed.",player); return false; }
     }
     if(!write_file(prepared+"\\format.txt",Gow3Prepare::Bytes(marker,marker+std::strlen(marker)))) {
         stop("Writing the prepared game files failed.",player); return false;
@@ -365,27 +374,56 @@ static void loader() {
     // Finish saved-pipeline loading before play; reserve background compilation for new effects.
     // Compiler concurrency and retained IR pools are bounded separately in the UWP renderer.
     const std::pair<const char*,const char*> performance_defaults[]={
-        {"SPARTAN_ASYNC_SHADERS","1"},{"SPARTAN_PIPELINE_CACHE","1"},
-        {"SPARTAN_BACKGROUND_WARMUP","0"},{"SPARTAN_PARALLEL_WARMUP","1"},
-        {"SPARTAN_PIPELINE_BINARIES","1"},{"SPARTAN_FRAMES_AHEAD","2"},
-        {"SPARTAN_STREAM_MEMORY","cached"},{"SPARTAN_DEFERRED_READBACK","1"},
-        {"SPARTAN_STALE_READBACK","1"},{"SPARTAN_UWP_RENDER_RES","720p"}
+        {"SPARTAN_PIPELINE_CACHE","1"},{"SPARTAN_BACKGROUND_WARMUP","0"},{"SPARTAN_PARALLEL_WARMUP","1"},
+        {"SPARTAN_PIPELINE_BINARIES","1"},{"SPARTAN_STREAM_MEMORY","cached"}
     };
     for(auto [key,value]:performance_defaults) if(!std::getenv(key)) _putenv_s(key,value);
-    const char* render_res=std::getenv("SPARTAN_UWP_RENDER_RES");
-    const bool use_720p=render_res&&std::strcmp(render_res,"720p")==0;
-    std::string patches=prepared+"\\patches-"+(use_720p?"720p":"native")+".bin";
-    _putenv_s("SPARTAN_DMEM_MB","7104");
+    // The in-game menu's settings, as upstream's launcher reads them before a start: the render resolution chooses
+    // the patches, and the settings the renderer reads as variables are passed on (graphics-debug.txt still wins).
+    std::map<std::string,std::string> menu;
+    {
+        std::ifstream file(winrt::to_hstring(user+"\\graphics.cfg").c_str());
+        for(std::string line;std::getline(file,line);) {
+            if(!line.empty()&&line.back()=='\r') line.pop_back();
+            const auto separator=line.find('=');
+            if(separator!=std::string::npos&&line[0]!='#') menu[line.substr(0,separator)]=line.substr(separator+1);
+        }
+    }
+    const auto setting=[&](const char* key,const char* fallback) {
+        const auto found=menu.find(key);
+        return found==menu.end() ? std::string(fallback) : found->second;
+    };
+    struct Passed {const char* variable; const char* key; const char* fallback;};
+    const Passed passed[]={{"SPARTAN_ASYNC_SHADERS","async_shaders","1"},
+        {"SPARTAN_DEFERRED_READBACK","deferred_readback","1"},{"SPARTAN_STALE_READBACK","stale_readback","1"}};
+    for(auto const& entry:passed) if(!std::getenv(entry.variable)) _putenv_s(entry.variable,setting(entry.key,entry.fallback).c_str());
+    _putenv_s("SPARTAN_GLYPHS","xbox");  // the menu names the Xbox controller's buttons
+    std::map<std::string,std::string> direct_memory;  // resolutions.txt: the prepared resolutions and their memory
+    {
+        std::ifstream file(winrt::to_hstring(prepared+"\\resolutions.txt").c_str());
+        for(std::string name,megabytes;file>>name>>megabytes;) direct_memory[name]=megabytes;
+    }
+    std::string resolution=setting("render_resolution","720p");
+    if(const char* forced=std::getenv("SPARTAN_UWP_RENDER_RES")) resolution=forced;
+    if(!direct_memory.count(resolution)) {
+        std::printf("UWP graphics: no patches prepared for %s, 720p instead\n",resolution.c_str());
+        resolution="720p";
+    }
+    std::string patches=prepared+"\\patches-"+resolution+".bin";
+    _putenv_s("SPARTAN_DMEM_MB",direct_memory[resolution].c_str());
     if(mode=="boot") runtime_memory_start_paging();
     _putenv_s("SPARTAN_ENGINE_FPS","60");
     _putenv_s("SPARTAN_VBLANK_HZ","60");
-    std::printf("UWP graphics patches: %s, texture arena fix, 7104 MiB virtual direct pool, 60 Hz engine\n",use_720p?"720p":"native");
+    std::printf("UWP graphics patches: %s, %s MiB virtual direct pool, 60 Hz engine\n",resolution.c_str(),
+        direct_memory[resolution].c_str());
     std::printf("UWP renderer: draw pipe %s, record thread %s, async shaders %s, pipeline cache %s\n",
         std::getenv("SPARTAN_DRAW_PIPE"),std::getenv("SPARTAN_VK_RECORD_THREAD"),
         std::getenv("SPARTAN_ASYNC_SHADERS"),std::getenv("SPARTAN_PIPELINE_CACHE"));
-    std::printf("UWP performance: background warm-up %s, parallel warm-up %s, pipeline binaries %s, frames ahead %s, stream memory %s\n",
+    std::printf("UWP performance: background warm-up %s, parallel warm-up %s, pipeline binaries %s, stream memory %s, "
+        "readbacks deferred %s stale %s\n",
         std::getenv("SPARTAN_BACKGROUND_WARMUP"),std::getenv("SPARTAN_PARALLEL_WARMUP"),
-        std::getenv("SPARTAN_PIPELINE_BINARIES"),std::getenv("SPARTAN_FRAMES_AHEAD"),std::getenv("SPARTAN_STREAM_MEMORY"));
+        std::getenv("SPARTAN_PIPELINE_BINARIES"),std::getenv("SPARTAN_STREAM_MEMORY"),
+        std::getenv("SPARTAN_DEFERRED_READBACK"),std::getenv("SPARTAN_STALE_READBACK"));
     std::puts("Running the existing loader and runtime with native UWP audio output.");
     std::vector<std::string> arguments={"gow3-uwp",boot};
 #ifdef GOW3_LINK_RENDERER
@@ -429,11 +467,7 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
         });
 #ifdef GOW3_LINK_RENDERER
         window.KeyDown([](auto const&,auto const& event) {
-            if(event.VirtualKey()==winrt::Windows::System::VirtualKey::F3&&!event.KeyStatus().WasKeyDown) {
-                event.Handled(true);Gow3Uwp::Overlay::Toggle();
-            } else if(gow3_uwp_dialog_key(uint32_t(event.VirtualKey()),1,event.KeyStatus().WasKeyDown)) {
-                event.Handled(true);
-            }
+            if(gow3_uwp_dialog_key(uint32_t(event.VirtualKey()),1,event.KeyStatus().WasKeyDown)) event.Handled(true);
         });
         window.KeyUp([](auto const&,auto const& event) {
             if(gow3_uwp_dialog_key(uint32_t(event.VirtualKey()),0,0)) event.Handled(true);

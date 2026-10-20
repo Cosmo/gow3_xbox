@@ -39,11 +39,19 @@ struct Values {
     std::atomic<float> reactive_threshold{0.2f};
     std::atomic<float> reactive_max{0.9f};
     std::atomic<int> debug_view{DebugNone};
+#ifdef GOW3_UWP // Xbox alpha: the overlay is on, with FPS and the app's memory (testers report both)
+    std::atomic<bool> show_fps{true};
+#else
     std::atomic<bool> show_fps{false};
+#endif
     /// Performance overlay (spartanport_perf_stats.h): items shown, font size and background opacity
     /// in percent, corner (0 top left, 1 top right, 2 bottom left, 3 bottom right), layout
     /// (0 one line, 1 one item per line). menu_tab: the menu's last tab.
+#ifdef GOW3_UWP
+    std::atomic<unsigned> overlay_items{1u | 32u};
+#else
     std::atomic<unsigned> overlay_items{7};
+#endif
     std::atomic<int> overlay_scale{100}, overlay_corner{1}, overlay_opacity{50}, overlay_layout{0};
     std::atomic<int> menu_tab{0};
     std::atomic<float> red_orb_multiplier{1.0f};
@@ -74,7 +82,11 @@ struct Values {
     std::atomic<bool> rcas_applied{false};
     /// Set by the presenter: the game's image and the window it is shown in, in pixels.
     std::atomic<int> image_width{0}, image_height{0}, window_width{0}, window_height{0};
+#ifdef GOW3_UWP // measured on the Series X: steadier with two
+    std::atomic<int> frames_queued{2};
+#else
     std::atomic<int> frames_queued{1};
+#endif
     /// Controller vibration strength in percent; 0 turns it off (runtime_pad.c). Live.
     std::atomic<int> vibration{100};
     /// Mouse movement in px that counts as one step of a stick prompt (runtime_pad.c). Live.
@@ -86,7 +98,11 @@ struct Values {
     /// L2 aim sensitivity in percent, 10 to 200: lower needs more mouse for the same stick. Live.
     std::atomic<int> mouse_aim_sensitivity{100};
     // Startup: run.py turns them into patches and environment variables; "Apply and restart".
+#ifdef GOW3_UWP // index of 720p in SpartanGraphics::Resolutions, the Xbox default
+    std::atomic<int> render_resolution{2};
+#else
     std::atomic<int> render_resolution{0};
+#endif
     std::atomic<int> engine_fps{120};
     std::atomic<bool> deferred_readback{true};
     std::atomic<bool> stale_readback{true};

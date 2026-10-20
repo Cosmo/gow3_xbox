@@ -18,8 +18,8 @@ def prepare(out):
     elf = (out / 'eboot.elf').read_bytes()
     segments, image = patches.eboot_segments(elf), patches.eboot_image(elf)
     report = {}
-    for resolution in ('native', '720p'):
-        extra = '' if resolution == 'native' else 'Resolution Patch - 720p'
+    for resolution in ('native', '720p', '900p', '4K'):
+        extra = '' if resolution == 'native' else f'Resolution Patch - {resolution}'
         names = patches.selected_patches(xml, version, extra)
         skipped = {}
         writes = patches.compile_patches(xml, names, None, segments, image, skipped)
