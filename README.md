@@ -24,11 +24,6 @@ render resolution (720p by default), overlay, Automatic QTE, vibration and more.
 
 New versions install over earlier ones and keep your saves and settings.
 
-## Build
-
-GitHub Actions → **Xbox build** → Run workflow builds the package and, if you ask for it, a
-pre-release. To build on your own PC, see [xbox/README.md](xbox/README.md).
-
 ## Credits and license
 
 [xbox/CREDITS.md](xbox/CREDITS.md) lists everything this builds on. GPL-2.0, like SpartanPort.
