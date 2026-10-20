@@ -5,11 +5,11 @@ Developer Mode from the player's own dump. It contains no game code or game asse
 
 ## Built on
 
-- **gow3_pc** by Felipe Prado and its contributors
-  (https://github.com/FelipePrado0/gow3_pc): the PC port and launcher of God of War III
-  Remastered. Its native loader, runtime, renderer integration and game patches are the base
-  of this project, which is a fork of it. GPL-2.0.
-- **bloodborne_pc** by Supermedo (https://github.com/Supermedo/bloodborne_pc), which gow3_pc
+- **SpartanPort** (formerly gow3_pc) by Felipe Prado and its contributors
+  (https://github.com/FelipePrado0/SpartanPort): the PC port and launcher of God of War III
+  Remastered. Its native loader, runtime, renderer integration, in-game menu and game patches
+  are the base of this project, which is a fork of it. GPL-2.0.
+- **bloodborne_pc** by Supermedo (https://github.com/Supermedo/bloodborne_pc), which SpartanPort
   started from. GPL-2.0.
 - **shadPS4** (https://github.com/shadps4-emu/shadPS4): the PS4 graphics emulation, its shader
   recompiler and Vulkan renderer (`gpu/shadps4`). GPL-2.0.
@@ -23,7 +23,7 @@ Developer Mode from the player's own dump. It contains no game code or game asse
 ## Game patches
 
 `patches/CUSA01623.xml` holds shadPS4/GoldHEN-format patches by **cuesta4**
-and **kvicken**, ported and extended by gow3_pc (Felipe Prado). Skip Intro and Skip Any Video
+and **kvicken**, ported and extended by SpartanPort (Felipe Prado). Skip Intro and Skip Any Video
 build on the PS3 patches by **illusion0001** (illusionyy).
 
 ## Libraries in the package

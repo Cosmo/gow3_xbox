@@ -1,18 +1,8 @@
 # God of War 3 Launcher for Xbox
 
-God of War III Remastered on the Xbox Series X|S in Developer Mode (not the Xbox One), built
-on gow3_pc and Dozen ([CREDITS.md](CREDITS.md)). The package contains no game files: it runs
-your own dump.
-
-## Testers
-
-1. Get the zip from the repository's Releases and unzip it on a PC.
-2. Device Portal → **Add** → the `.appx` and the package in `Dependencies`.
-3. Dev Home: set the app's type to **Game**.
-4. Copy your dump (the folder with `eboot.bin`, `sce_module`, `sce_sys` and `dvdroot_ps4`) to a
-   USB drive as `\dumps\GodOfWar3` and connect it to the Xbox.
-5. Start **God of War 3 Launcher**: **Prepare** (once), **Precompile shaders** (once,
-   recommended), then **Start game**.
+The Xbox app of this fork: God of War III Remastered on the Xbox Series X|S in Developer Mode,
+built on SpartanPort and Dozen ([CREDITS.md](CREDITS.md)). Installing it is described in the
+[README](../README.md) at the top of the repository; this file is for building and developing it.
 
 New builds install over earlier ones and keep the app's data. Packages are signed with
 `signing/gow3_xbox-signing.pfx`, a self-signed test key for `CN=gow3_xbox` that is public on
@@ -21,7 +11,7 @@ GitHub, installs over the previous one. The Xbox in Developer Mode installs such
 
 **Builds on GitHub**: `.github/workflows/xbox.yml` (Actions → Xbox build → Run workflow) builds
 Dozen from the Mesa fork, then the launcher and `GodOfWar3Launcher-<version>.zip`, and
-publishes it as a pre-release with the steps above.
+publishes it as a pre-release with the install steps.
 
 The rest of this file is the development log.
 
