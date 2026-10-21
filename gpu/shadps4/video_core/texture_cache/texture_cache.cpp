@@ -251,14 +251,31 @@ void TextureCache::ProcessDownloadImages() {
         ReportImageCreates();
     }
     if (deferred_readbacks) {
-        // Upload workers must finish reading RAM before these pages become inaccessible.
-        scheduler.WaitHostCopies();
+        // Upload workers must finish reading RAM before these pages become inaccessible. Only a
+        // read-back image protects pages: an end-of-pipe event without one (most) does not wait
+        // for the recording thread (toggle EopCopyWaitForReadbacks: always, as before).
+        bool waited = SpartanToggle::Disabled(SpartanToggle::EopCopyWaitForReadbacks);
+        if (!waited) {
+            std::unique_lock lock{download_images_mutex};
+            waited = std::ranges::any_of(download_images, [this](ImageId id) {
+                return True(slot_images[id].flags & ImageFlagBits::GpuModified);
+            });
+        }
+        if (waited) {
+            scheduler.WaitHostCopies();
+        }
         std::scoped_lock readback_lock{readback_mutex};
         RetireReadbacks();
         std::unique_lock lock{download_images_mutex};
+        bool late = false;
         for (const ImageId image_id : download_images) {
             const auto& image = slot_images[image_id];
             if (False(image.flags & ImageFlagBits::GpuModified)) continue;
+            if (!waited) {
+                // Added after the check (another thread): read back at the next event.
+                late = true;
+                break;
+            }
             const u64 size = u64{image.info.pitch} * image.info.size.height *
                 image.info.size.depth * image.info.resources.layers * (image.info.num_bits / 8);
             if (!pending_readbacks.CanFit(size)) {
@@ -296,7 +313,9 @@ void TextureCache::ProcessDownloadImages() {
                 }
             }
         }
-        download_images.clear();
+        if (!late) {
+            download_images.clear();
+        }
         if (Vulkan::WaitDiagnostics::Enabled()) {
             const auto now = std::chrono::steady_clock::now();
             if (now - readback_report >= std::chrono::seconds(5)) {
