@@ -119,6 +119,7 @@ DescriptorHeap::~DescriptorHeap() {
 }
 
 vk::DescriptorSet DescriptorHeap::Commit(vk::DescriptorSetLayout set_layout) {
+    std::scoped_lock lock{mutex};
     const u64 set_key = std::bit_cast<u64>(set_layout);
     const auto [it, _] = descriptor_sets.try_emplace(set_key);
 

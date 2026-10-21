@@ -72,6 +72,12 @@ enum : std::uint64_t {
     /// A texture/storage request for the top rows of a cached image (same address and layout)
     /// uses that image, instead of creating and uploading a new one (texture_cache.cpp).
     PartialHeightViews = 1ull << 58,
+    /// Without push descriptors (Dozen), descriptor sets are allocated and written on the
+    /// recording thread with the command that binds them (vk_pipeline_common.cpp).
+    DescriptorThread = 1ull << 59,
+    /// End-of-pipe events wait for the recording thread's host copies only when an image is
+    /// read back, the one case that protects pages (texture_cache.cpp).
+    EopCopyWaitForReadbacks = 1ull << 60,
     // Bits 20-29 are used as raw debug toggles by the camera/object motion and the upscaler.
 };
 inline bool Disabled(std::uint64_t bit) {

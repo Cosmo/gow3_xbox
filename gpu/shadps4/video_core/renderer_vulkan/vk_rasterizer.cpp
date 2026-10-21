@@ -880,6 +880,24 @@ void Rasterizer::PrintPipeStats() {
         }
     }
     std::printf("\n");
+    static u64 last_descriptors[2]{};
+    const u64 descriptors[2] = {Pipeline::descriptor_cycles[0].load(std::memory_order_relaxed),
+                                Pipeline::descriptor_cycles[1].load(std::memory_order_relaxed)};
+    static u64 last_counts[4]{};
+    u64 counts[4];
+    for (u32 i = 0; i < 4; ++i) {
+        counts[i] = Pipeline::descriptor_counts[i].load(std::memory_order_relaxed);
+    }
+    const double sets = std::max<double>(1.0, double(counts[0] - last_counts[0]));
+    std::printf("  descriptor sets: %.1f%% of the time on the draw thread, %.1f%% on the "
+                "recording thread; %.0f sets/s with %.1f buffers, %.1f images, %.1f samplers\n",
+                100.0 * (descriptors[0] - last_descriptors[0]) / cycles,
+                100.0 * (descriptors[1] - last_descriptors[1]) / cycles, sets / seconds,
+                (counts[1] - last_counts[1]) / sets, (counts[2] - last_counts[2]) / sets,
+                (counts[3] - last_counts[3]) / sets);
+    last_descriptors[0] = descriptors[0];
+    last_descriptors[1] = descriptors[1];
+    std::copy(std::begin(counts), std::end(counts), std::begin(last_counts));
     drain_sites.clear();
     draw_pipe->drains_by_reason = {};
     window = now;

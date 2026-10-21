@@ -4,6 +4,7 @@
 #pragma once
 
 #include <deque>
+#include <mutex>
 #include <vector>
 #include <boost/container/static_vector.hpp>
 #include <tsl/robin_map.h>
@@ -87,6 +88,8 @@ private:
     std::deque<std::pair<vk::DescriptorPool, u64>> pending_pools;
     using DescSetBatch = boost::container::static_vector<vk::DescriptorSet, DescriptorSetBatch>;
     tsl::robin_map<u64, DescSetBatch> descriptor_sets;
+    /// spartanport: sets are allocated on the draw thread or the recording thread.
+    std::mutex mutex;
 };
 
 } // namespace Vulkan
