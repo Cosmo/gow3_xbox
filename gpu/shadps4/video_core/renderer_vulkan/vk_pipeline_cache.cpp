@@ -92,7 +92,13 @@ constexpr static std::array DescriptorHeapSizes = {
 #endif
     vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 8192},
     vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 1024},
+#ifdef GOW3_UWP
+    // spartanport (UWP): sets average 1.5 samplers; 1024 ran a pool dry after ~700 sets, a pool
+    // change every ~4 ms. 2048 is the most a D3D12 sampler heap holds on the Series X.
+    vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 2048},
+#else
     vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1024},
+#endif
 };
 
 static u32 MapOutputs(std::span<Shader::OutputMap, 3> outputs, const AmdGpu::VsOutputControl& ctl) {
