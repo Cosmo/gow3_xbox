@@ -240,6 +240,43 @@ static std::string find_dump() {
     return {};
 }
 
+static bool read_file(std::string const& path,Gow3Prepare::Bytes& data);
+
+// A dump of this game: an eboot.bin and a param.sfo that names God of War III Remastered (other PS4 dumps may sit
+// next to it).
+static bool is_game_dump(std::string const& folder) {
+    Gow3Prepare::Bytes sfo;
+    return dump_readable(folder)&&read_file(folder+"\\sce_sys\\param.sfo",sfo)&&Gow3Prepare::CheckTitle(sfo).empty();
+}
+
+// The internal storage a Dev Mode app may read without the picker: the first dump of this game under `root`
+// (D:\DevelopmentFiles on the Xbox), at most three folders deep, nearest first.
+static std::string find_internal_dump(std::string const& root="D:\\DevelopmentFiles") {
+    const auto started=std::chrono::steady_clock::now();
+    std::vector<std::pair<std::string,int>> folders={{root,0}};
+    std::string found;
+    size_t index=0;
+    for(;index<folders.size()&&index<500;++index) {
+        auto [folder,depth]=folders[index];
+        if(is_game_dump(folder)) { found=folder; break; }
+        if(depth==3) continue;
+        WIN32_FIND_DATAA entry{};
+        HANDLE search=gow3_uwp_find((folder+"\\*").c_str(),&entry);
+        if(search==INVALID_HANDLE_VALUE) continue;
+        do {
+            const std::string name=entry.cFileName;
+            // WindowsApps holds the installed Dev Mode apps.
+            if(!(entry.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)||name=="."||name==".."||name=="WindowsApps") continue;
+            folders.emplace_back(folder+(folder.back()=='\\' ? "" : "\\")+name,depth+1);
+        } while(gow3_uwp_find_next(search,&entry));
+        FindClose(search);
+    }
+    std::printf("Game search in %s: %s (%zu folders, %lld ms)\n",root.c_str(),found.empty() ? "not found" : found.c_str(),
+        std::min(index+1,folders.size()),static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now()-started).count()));
+    return found;
+}
+
 static bool read_file(std::string const& path,Gow3Prepare::Bytes& data) {
     FILE *file=gow3_uwp_fopen(path.c_str(),"rb");
     if(!file) return false;
@@ -391,16 +428,18 @@ static void loader() {
     }
     game_mode=(mode=="boot");
     _putenv_s("SPARTAN_UWP_LAUNCHER",mode=="boot" ? "1" : "0");
-    // Players: the folder they chose before, else \dumps\GodOfWar3 on a USB drive, else the folder picker.
+    // Players: the folder they chose before, else \dumps\GodOfWar3 on a USB drive, else a dump under
+    // D:\DevelopmentFiles on the internal storage, else the folder picker.
     // SPARTAN_CHOOSE_DUMP=1 (graphics-debug.txt) opens the picker even when a dump is found.
     if(player) {
         const char* force=std::getenv("SPARTAN_CHOOSE_DUMP");
         const bool choose=force&&*force=='1';
         if(!choose) dump=chosen_dump();
         if(!choose&&dump.empty()) dump=find_dump();
+        if(!choose&&dump.empty()) dump=find_internal_dump();
         if(dump.empty()) dump=choose_dump(choose ? "Choose the game folder." :
-            "No game found.\n\nChoose the folder of your God of War III Remastered dump (the folder with eboot.bin), "
-            "or copy the dump to a USB drive as \\dumps\\GodOfWar3.");
+            "No game found.\n\nChoose the folder of your God of War III Remastered dump (the folder with eboot.bin) on "
+            "a USB drive, or copy the dump to the console's internal storage anywhere under D:\\DevelopmentFiles.");
         if(dump.empty()) close_app("no game folder chosen");
     }
     _putenv_s("SPARTAN_PRECOMPILE_DUMP",dump.c_str());
@@ -420,6 +459,31 @@ static void loader() {
         int result=gow3_probe_main(2,args);
         std::printf("Memory contract self-test returned %d\n",result); finished=true; return;
     }
+    // Developer check of what the app may read: every drive root through the game's file functions (folder names only).
+    if(mode=="drives") {
+        for(char letter='A';letter<='Z';++letter) {
+            const std::string root=std::string(1,letter)+":\\";
+            WIN32_FIND_DATAA entry{};
+            HANDLE search=gow3_uwp_find((root+"*").c_str(),&entry);
+            if(search==INVALID_HANDLE_VALUE) {
+                const DWORD error=GetLastError();
+                if(error!=ERROR_PATH_NOT_FOUND&&error!=ERROR_INVALID_DRIVE&&error!=ERROR_NOT_READY) std::printf("Drive %s: error %lu\n",root.c_str(),error);
+                continue;
+            }
+            std::string names;
+            unsigned count=0;
+            unsigned folders=0;
+            do {
+                if(!(entry.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)) continue;
+                if(folders++<10) names+=std::string(folders>1 ? ", " : "")+entry.cFileName;
+            } while(++count<200&&gow3_uwp_find_next(search,&entry));
+            FindClose(search);
+            std::printf("Drive %s: %u entries, folders: %s\n",root.c_str(),count,names.c_str());
+        }
+        finished=true; return;
+    }
+    // Developer check of the internal search: the folder on line 2 of run.txt, else D:\DevelopmentFiles.
+    if(mode=="search") { find_internal_dump(dump.empty() ? "D:\\DevelopmentFiles" : dump); finished=true; return; }
     if(mode!="boot"&&mode!="imports"&&mode!="storage"&&mode!="prepare") {
         std::puts("READY: upload run.txt (boot, imports, storage or prepare on line 1, dump folder on line 2), then relaunch."); finished=true; return;
     }

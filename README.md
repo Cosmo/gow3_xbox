@@ -14,9 +14,13 @@ SpartanPort's README.
 1. Download the zip from [Releases](https://github.com/Cosmo/gow3_xbox/releases) and unzip it on a PC.
 2. Device Portal → **Add** → the `.appx` and the package in `Dependencies`. If Dev Home lists the
    app as an App, set its type to **Game**.
-3. Copy your dump (the folder with `eboot.bin`, `sce_module`, `sce_sys` and `dvdroot_ps4`) to a USB
-   drive and connect the drive to the Xbox. Any folder works; the app looks in `\dumps\GodOfWar3`
-   by itself and otherwise asks you to choose the folder once.
+3. Copy your dump (the folder with `eboot.bin`, `sce_module`, `sce_sys` and `dvdroot_ps4`) to one of:
+   - **a USB drive**, in any folder. The app looks in `\dumps\GodOfWar3` by itself and otherwise
+     asks you to choose the folder once.
+   - **the console's internal storage**, anywhere under `D:\DevelopmentFiles` (for example
+     `D:\DevelopmentFiles\dumps\GodOfWar3`). The app finds it there by itself, up to three folders
+     deep. This is the Dev Mode folder that apps may read; other places on the internal storage
+     are closed to apps.
 4. Start **God of War 3 Launcher**: **Prepare** (once), **Precompile shaders** (once, recommended),
    then **Start game**. **Choose game folder** in the same menu switches to another dump.
 

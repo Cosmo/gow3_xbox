@@ -185,7 +185,7 @@ jobs:
           **Install**
           1. Unzip on a PC.
           2. Device Portal → **Add** → the ``.appx`` and the package in ``Dependencies``. If Dev Home lists the app as an App, set its type to **Game**.
-          3. Copy your dump (the folder with ``eboot.bin``, ``sce_module``, ``sce_sys`` and ``dvdroot_ps4``) to a USB drive and connect it to the Xbox. Any folder works; the app looks in ``\dumps\GodOfWar3`` by itself and otherwise asks you to choose the folder once.
+          3. Copy your dump (the folder with ``eboot.bin``, ``sce_module``, ``sce_sys`` and ``dvdroot_ps4``) to a USB drive (any folder; the app looks in ``\dumps\GodOfWar3`` by itself and otherwise asks you to choose the folder once) or to the console's internal storage anywhere under ``D:\DevelopmentFiles`` (found by itself).
           4. Start **God of War 3 Launcher**: **Prepare** (once), **Precompile shaders** (once, recommended), then **Start game**. **Choose game folder** in the same menu switches to another dump.
 
           In the game, **RS + LT** (click the right stick while holding the left trigger) opens the menu.
