@@ -24,6 +24,15 @@ render resolution (720p by default), overlay, Automatic QTE, vibration and more.
 
 New versions install over earlier ones and keep your saves and settings.
 
+## Known issues
+
+- **4K needs more memory than the Xbox allows.** In Developer Mode an app gets at most 5 GiB. At
+  4K the app moves about 450 MiB of the game's memory to disk and runs at about 45 fps; heavy
+  scenes can stutter or run out of memory. At 720p (the default) nothing goes to disk.
+- **Occasional ghosting.** Now and then moving parts of the picture leave strong trails, for
+  example during the opening camera move on Gaia's back. It doesn't happen on every start; it
+  seems to come with frame rate drops, and its cause isn't known yet.
+
 ## Credits and license
 
 [xbox/CREDITS.md](xbox/CREDITS.md) lists everything this builds on. GPL-2.0, like SpartanPort.
