@@ -369,7 +369,8 @@ static void loader() {
     if(!std::getenv("SPARTAN_NO_MSAA")) _putenv_s("SPARTAN_NO_MSAA","1");
     if(!std::getenv("SPARTAN_DRAW_PIPE")) _putenv_s("SPARTAN_DRAW_PIPE","1");
     if(!std::getenv("SPARTAN_VK_RECORD_THREAD")) _putenv_s("SPARTAN_VK_RECORD_THREAD","1");
-    if(!std::getenv("SPARTAN_COPY_THREADS")) _putenv_s("SPARTAN_COPY_THREADS","0");
+    // Guest memory copies on two threads: the Vulkan recording thread is the busiest one with Dozen.
+    if(!std::getenv("SPARTAN_COPY_THREADS")) _putenv_s("SPARTAN_COPY_THREADS","2");
     if(!std::getenv("SPARTAN_PREP_WORKERS")) _putenv_s("SPARTAN_PREP_WORKERS","0");
     // Finish saved-pipeline loading before play; reserve background compilation for new effects.
     // Compiler concurrency and retained IR pools are bounded separately in the UWP renderer.
