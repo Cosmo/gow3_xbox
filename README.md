@@ -22,7 +22,8 @@ SpartanPort's README.
      deep. This is the Dev Mode folder that apps may read; other places on the internal storage
      are closed to apps.
 4. Start **God of War 3 Launcher**: **Prepare** (once), **Precompile shaders** (once, recommended),
-   then **Start game**. **Choose game folder** in the same menu switches to another dump.
+   then **Start game**. The menu shows the game folder it uses; **Choose game folder** lists the
+   dumps the app found (internal storage and USB) and can browse a USB drive.
 
 In the game, **RS + LT** (click the right stick while holding the left trigger) opens the menu:
 render resolution (720p by default), overlay, Automatic QTE, vibration and more.

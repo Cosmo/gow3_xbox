@@ -122,9 +122,33 @@ static bool dump_readable(std::string const& dump) {
     return probe!=nullptr;
 }
 
-// The folder the player chose in the system's folder picker (the file browser on the Xbox), kept across starts
-// in the app's access list; empty when there is none or it cannot be read any more.
+// Where a game folder is, in the player's words.
+static std::string describe_place(std::string const& dump) {
+    return _strnicmp(dump.c_str(),"D:\\DevelopmentFiles",19)==0 ? "internal storage" : "USB drive";
+}
+
+// The chosen game folder (from the launcher's list or the picker) is kept in LocalState\game-folder.txt.
+static std::wstring game_folder_file() {
+    return std::wstring(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())+L"\\game-folder.txt";
+}
+static void remember_dump(std::string const& dump) {
+    std::ofstream file(game_folder_file(),std::ios::trunc);
+    file<<dump<<"\n";
+}
+
+// The folder the player chose, kept across starts: game-folder.txt, else a folder of the picker in the app's access list
+// (which follows renames); empty when there is none or it cannot be read any more.
 static std::string chosen_dump() {
+    {
+        std::ifstream file(game_folder_file());
+        std::string dump;
+        if(std::getline(file,dump)&&!dump.empty()) {
+            if(dump.back()=='\r') dump.pop_back();
+            const bool readable=dump_readable(dump);
+            std::printf("Chosen game folder %s: %s\n",dump.c_str(),readable ? "found" : "not readable");
+            if(readable) return dump;
+        }
+    }
     using namespace winrt::Windows::Storage::AccessCache;
     try {
         auto list=StorageApplicationPermissions::FutureAccessList();
@@ -179,6 +203,7 @@ static std::string use_picked(winrt::Windows::Storage::StorageFolder const& fold
                 readable ? "readable" : "not readable",read_error);
     if(readable) {
         winrt::Windows::Storage::AccessCache::StorageApplicationPermissions::FutureAccessList().AddOrReplace(L"dump",folder);
+        remember_dump(dump);
         return dump;
     }
     problem=listed ? "The game cannot read its files from "+dump+".\n\nCopy the dump to a USB drive and choose it there."
@@ -197,27 +222,40 @@ static std::string choose_dump(std::string text) {
     }
 }
 
-// The launcher menu's "Choose game folder" (vk_presenter.cpp). The running game keeps the folder it started with, so a
-// new folder is remembered and the app closes after asking the player to start it again. Otherwise `message` gets what
-// the menu shows (empty when the picker was cancelled).
+// A folder chosen in the launcher (vk_presenter.cpp) is remembered. The running game keeps the folder it started with,
+// so a different one closes the app after asking the player to start it again; the same one returns what the menu shows.
+static std::string switch_game_folder(std::string const& dump) {
+    remember_dump(dump);
+    const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP");
+    if(current&&_stricmp(dump.c_str(),current)==0) return "This is already the game folder.";
+    std::printf("Game folder chosen: %s\n",dump.c_str());
+    ask("Game folder: "+dump+" ("+describe_place(dump)+")\n\nStart the app again to play from this folder.",{"OK"});
+    close_app("game folder changed");
+}
+
+// The launcher's "Browse USB drive...": the picker; `message` gets what the menu shows (empty when it was cancelled).
 extern "C" void gow3_uwp_choose_game_folder(char *message,size_t size) {
     auto folder=pick_folder();
     std::string text;
     if(!folder) std::puts("Folder picker: nothing chosen");
-    else {
-        const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP");
-        auto dump=use_picked(folder,text);
-        if(!dump.empty()&&current&&_stricmp(dump.c_str(),current)==0) text="This is already the game folder.";
-        else if(!dump.empty()) {
-            ask("Game folder: "+dump+"\n\nStart the app again to play from this folder.",{"OK"});
-            close_app("game folder changed");
-        }
-    }
+    else if(auto dump=use_picked(folder,text);!dump.empty()) text=switch_game_folder(dump);
     std::snprintf(message,size,"%s",text.c_str());
 }
 
-// The player's dump: the folder \dumps\GodOfWar3 on a USB drive.
-static std::string find_dump() {
+// The launcher's choice of a folder from its list.
+extern "C" void gow3_uwp_use_game_folder(const char *dump,char *message,size_t size) {
+    std::snprintf(message,size,"%s",switch_game_folder(dump).c_str());
+}
+
+// The launcher's line about the folder the game runs from.
+extern "C" void gow3_uwp_game_folder_line(char *out,size_t size) {
+    const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP");
+    if(!current||!*current) { std::snprintf(out,size,"%s",""); return; }
+    std::snprintf(out,size,"Game folder: %s (%s)",current,describe_place(current).c_str());
+}
+
+// Every \dumps\GodOfWar3 on a USB drive.
+static std::vector<std::string> usb_dumps() {
     std::vector<std::string> roots;
     try {
         for(auto const& drive:winrt::Windows::Storage::KnownFolders::RemovableDevices().GetFoldersAsync().get()) {
@@ -230,14 +268,21 @@ static std::string find_dump() {
     // The console names its first USB drive E:; it is tried when the list does not include it.
     if(std::none_of(roots.begin(),roots.end(),[](std::string const& root) { return _strnicmp(root.c_str(),"E:",2)==0; }))
         roots.push_back("E:\\");
+    std::vector<std::string> found;
     for(auto root:roots) {
         if(root.back()!='\\') root+='\\';
         std::string dump=root+"dumps\\GodOfWar3";
-        FILE *probe=gow3_uwp_fopen((dump+"\\eboot.bin").c_str(),"rb");
-        std::printf("Game dump %s: %s\n",dump.c_str(),probe ? "found" : "not found");
-        if(probe) { std::fclose(probe); return dump; }
+        const bool readable=dump_readable(dump);
+        std::printf("Game dump %s: %s\n",dump.c_str(),readable ? "found" : "not found");
+        if(readable) found.push_back(dump);
     }
-    return {};
+    return found;
+}
+
+// The player's dump: the folder \dumps\GodOfWar3 on a USB drive.
+static std::string find_dump() {
+    auto found=usb_dumps();
+    return found.empty() ? std::string{} : found.front();
 }
 
 static bool read_file(std::string const& path,Gow3Prepare::Bytes& data);
@@ -249,16 +294,16 @@ static bool is_game_dump(std::string const& folder) {
     return dump_readable(folder)&&read_file(folder+"\\sce_sys\\param.sfo",sfo)&&Gow3Prepare::CheckTitle(sfo).empty();
 }
 
-// The internal storage a Dev Mode app may read without the picker: the first dump of this game under `root`
-// (D:\DevelopmentFiles on the Xbox), at most three folders deep, nearest first.
-static std::string find_internal_dump(std::string const& root="D:\\DevelopmentFiles") {
+// The internal storage a Dev Mode app may read without the picker: the dumps of this game under `root`
+// (D:\DevelopmentFiles on the Xbox), at most three folders deep, nearest first, at most `limit` of them.
+static std::vector<std::string> find_internal_dumps(std::string const& root="D:\\DevelopmentFiles",size_t limit=8) {
     const auto started=std::chrono::steady_clock::now();
     std::vector<std::pair<std::string,int>> folders={{root,0}};
-    std::string found;
+    std::vector<std::string> found;
     size_t index=0;
-    for(;index<folders.size()&&index<500;++index) {
+    for(;index<folders.size()&&index<500&&found.size()<limit;++index) {
         auto [folder,depth]=folders[index];
-        if(is_game_dump(folder)) { found=folder; break; }
+        if(is_game_dump(folder)) { found.push_back(folder); continue; }
         if(depth==3) continue;
         WIN32_FIND_DATAA entry{};
         HANDLE search=gow3_uwp_find((folder+"\\*").c_str(),&entry);
@@ -271,10 +316,34 @@ static std::string find_internal_dump(std::string const& root="D:\\DevelopmentFi
         } while(gow3_uwp_find_next(search,&entry));
         FindClose(search);
     }
-    std::printf("Game search in %s: %s (%zu folders, %lld ms)\n",root.c_str(),found.empty() ? "not found" : found.c_str(),
-        std::min(index+1,folders.size()),static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::string names;
+    for(auto const& dump:found) names+=(names.empty() ? "" : ", ")+dump;
+    std::printf("Game search in %s: %s (%zu folders, %lld ms)\n",root.c_str(),found.empty() ? "not found" : names.c_str(),
+        std::min(index,folders.size()),static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now()-started).count()));
     return found;
+}
+static std::string find_internal_dump() {
+    auto found=find_internal_dumps();
+    return found.empty() ? std::string{} : found.front();
+}
+
+// The launcher's list for "Choose game folder" (vk_presenter.cpp): every dump of this game the app finds by itself (the
+// current and chosen folders, D:\DevelopmentFiles, \dumps\GodOfWar3 on USB drives), one "path<TAB>place" per line.
+extern "C" void gow3_uwp_find_game_folders(char *out,size_t size) {
+    std::vector<std::string> found;
+    const auto add=[&](std::string const& dump) {
+        if(dump.empty()||std::any_of(found.begin(),found.end(),[&](std::string const& known) {
+            return _stricmp(known.c_str(),dump.c_str())==0; })) return;
+        found.push_back(dump);
+    };
+    if(const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP")) add(current);
+    add(chosen_dump());
+    for(auto const& dump:find_internal_dumps()) add(dump);
+    for(auto const& dump:usb_dumps()) add(dump);
+    std::string text;
+    for(auto const& dump:found) text+=dump+"\t"+describe_place(dump)+"\n";
+    std::snprintf(out,size,"%s",text.c_str());
 }
 
 static bool read_file(std::string const& path,Gow3Prepare::Bytes& data) {
@@ -441,6 +510,7 @@ static void loader() {
             "No game found.\n\nChoose the folder of your God of War III Remastered dump (the folder with eboot.bin) on "
             "a USB drive, or copy the dump to the console's internal storage anywhere under D:\\DevelopmentFiles.");
         if(dump.empty()) close_app("no game folder chosen");
+        std::printf("Game folder: %s (%s)\n",dump.c_str(),describe_place(dump).c_str());
     }
     _putenv_s("SPARTAN_PRECOMPILE_DUMP",dump.c_str());
     std::string user=winrt::to_string(local)+"\\user";
@@ -483,7 +553,7 @@ static void loader() {
         finished=true; return;
     }
     // Developer check of the internal search: the folder on line 2 of run.txt, else D:\DevelopmentFiles.
-    if(mode=="search") { find_internal_dump(dump.empty() ? "D:\\DevelopmentFiles" : dump); finished=true; return; }
+    if(mode=="search") { find_internal_dumps(dump.empty() ? "D:\\DevelopmentFiles" : dump); finished=true; return; }
     if(mode!="boot"&&mode!="imports"&&mode!="storage"&&mode!="prepare") {
         std::puts("READY: upload run.txt (boot, imports, storage or prepare on line 1, dump folder on line 2), then relaunch."); finished=true; return;
     }

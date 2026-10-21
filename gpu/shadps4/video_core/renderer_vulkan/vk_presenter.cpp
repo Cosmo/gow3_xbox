@@ -9,7 +9,10 @@
 #ifdef GOW3_UWP
 #include <SDL3/SDL_surface.h>
 #include "overlay.h"
-// xbox/platform/main.cpp: the launcher's "Choose game folder".
+// xbox/platform/main.cpp: the launcher's game folder line and its "Choose game folder" list.
+extern "C" void gow3_uwp_game_folder_line(char* out, size_t size);
+extern "C" void gow3_uwp_find_game_folders(char* out, size_t size);
+extern "C" void gow3_uwp_use_game_folder(const char* dump, char* message, size_t size);
 extern "C" void gow3_uwp_choose_game_folder(char* message, size_t size);
 #endif
 #include "core/debug_state.h"
@@ -339,24 +342,52 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 #ifdef GOW3_UWP
     if (const char* launcher=std::getenv("SPARTAN_UWP_LAUNCHER"); launcher && *launcher=='1') {
         std::string title="God of War III Remastered";
+        char folder_line[600]{};
+        gow3_uwp_game_folder_line(folder_line,sizeof folder_line);
+        const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP");
+        const auto choose=[&](const std::string& heading,const std::vector<std::string>& items) {
+            SpartanOverlay::BeginChoice(heading,items,{},0);
+            int choice=-1;
+            while(choice==-1) {
+                // The dedicated UWP window thread already polls controller input.
+                PresentLoadingFrame();
+                choice=SpartanOverlay::PollChoice();
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+            return choice;
+        };
         const char* automatic=std::getenv("SPARTAN_PRECOMPILE_AUTORUN");
         bool compile_once=automatic&&*automatic=='1';
         for (;;) {
             int action=1;
             if (!compile_once) {
-                SpartanOverlay::BeginChoice(title,{"Start game","Precompile shaders","Choose game folder"},{},0);
-                action=-1;
-                while(action==-1) {
-                    // The dedicated UWP window thread already polls controller input.
-                    PresentLoadingFrame();
-                    action=SpartanOverlay::PollChoice();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
-                }
+                action=choose(*folder_line ? title+"\n"+folder_line : title,
+                              {"Start game","Precompile shaders","Choose game folder"});
                 if(action==0) break;
                 if(action==2) {
-                    // A new folder closes the app (xbox/platform/main.cpp); otherwise the menu shows why not.
+                    // Every dump the app finds by itself, then the picker. A different folder closes the app
+                    // (xbox/platform/main.cpp); otherwise the menu shows why not.
+                    std::vector<char> found(16384);
+                    gow3_uwp_find_game_folders(found.data(),found.size());
+                    std::vector<std::string> paths,items;
+                    std::istringstream lines(found.data());
+                    for(std::string line;std::getline(lines,line);) {
+                        const auto tab=line.find('\t');
+                        if(tab==std::string::npos) continue;
+                        paths.push_back(line.substr(0,tab));
+                        const bool now=current&&_stricmp(paths.back().c_str(),current)==0;
+                        items.push_back(paths.back()+" ("+line.substr(tab+1)+(now ? ", current" : "")+")");
+                    }
+                    items.push_back("Browse USB drive...");
+                    items.push_back("Back");
+                    const int picked=choose("Choose the game folder\n"
+                        "Internal storage: put the dump anywhere under D:\\DevelopmentFiles.\n"
+                        "USB drive: any folder; choose it with Browse USB drive.",items);
                     char message[512]{};
-                    gow3_uwp_choose_game_folder(message,sizeof message);
+                    if(picked>=0&&picked<int(paths.size()))
+                        gow3_uwp_use_game_folder(paths[picked].c_str(),message,sizeof message);
+                    else if(picked==int(paths.size()))
+                        gow3_uwp_choose_game_folder(message,sizeof message);
                     if(*message) title=message;
                     continue;
                 }
