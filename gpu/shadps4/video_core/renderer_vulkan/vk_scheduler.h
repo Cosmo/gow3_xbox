@@ -690,11 +690,11 @@ public:
 
     /// Sends the current execution context to the GPU
     /// and increments the scheduler timeline semaphore.
-    void Flush(SubmitInfo& info);
+    void Flush(SubmitInfo& info, std::source_location caller = std::source_location::current());
 
     /// Sends the current execution context to the GPU
     /// and increments the scheduler timeline semaphore.
-    void Flush();
+    void Flush(std::source_location caller = std::source_location::current());
 
     /// Sends the current execution context to the GPU and waits for it to complete.
     void Finish(std::source_location caller = std::source_location::current());
@@ -904,7 +904,13 @@ private:
 
     void RecorderThread(std::stop_token stoken);
 
-    void SubmitExecution(SubmitInfo& info);
+    void SubmitExecution(SubmitInfo& info, std::source_location caller);
+
+public:
+    /// spartanport (SPARTAN_FRAME_STATS): the call sites that submitted most since the last call.
+    static std::string TakeSubmitSites();
+
+private:
 
     void PriorityPendingOpsThread(std::stop_token stoken);
 

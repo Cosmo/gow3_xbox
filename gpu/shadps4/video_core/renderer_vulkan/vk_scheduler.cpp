@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <unordered_map>
 #ifndef _WIN32
 #include <dlfcn.h>
@@ -353,14 +354,35 @@ void Scheduler::RecorderThread(std::stop_token stoken) {
     }
 }
 
-void Scheduler::Flush(SubmitInfo& info) {
+void Scheduler::Flush(SubmitInfo& info, std::source_location caller) {
     // When flushing, we only send data to the driver; no waiting is necessary.
-    SubmitExecution(info);
+    SubmitExecution(info, caller);
 }
 
-void Scheduler::Flush() {
+void Scheduler::Flush(std::source_location caller) {
     SubmitInfo info{};
-    Flush(info);
+    Flush(info, caller);
+}
+
+namespace {
+std::mutex submit_sites_mutex;
+std::map<std::pair<std::string, u32>, u64> submit_sites;
+} // namespace
+
+std::string Scheduler::TakeSubmitSites() {
+    std::scoped_lock lock{submit_sites_mutex};
+    std::vector<std::pair<u64, std::string>> sorted;
+    for (const auto& [site, count] : submit_sites) {
+        const auto slash = site.first.find_last_of("/\\");
+        sorted.emplace_back(count, site.first.substr(slash + 1) + ":" + std::to_string(site.second));
+    }
+    submit_sites.clear();
+    std::sort(sorted.begin(), sorted.end(), std::greater{});
+    std::string out;
+    for (size_t i = 0; i < sorted.size() && i < 6; ++i) {
+        out += (i ? ", " : "") + sorted[i].second + " " + std::to_string(sorted[i].first);
+    }
+    return out;
 }
 
 void Scheduler::Finish(std::source_location caller) {
@@ -369,7 +391,7 @@ void Scheduler::Finish(std::source_location caller) {
     const bool diagnose = WaitDiagnostics::Enabled();
     const auto start = diagnose ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     SubmitInfo info{};
-    SubmitExecution(info);
+    SubmitExecution(info, caller);
     const u64 submit_ns = diagnose ? std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - start).count() : 0;
     Wait(presubmit_tick, caller, submit_ns);
@@ -388,7 +410,7 @@ void Scheduler::Wait(u64 tick, std::source_location caller, u64 submit_ns) {
     if (tick >= work_semaphore.CurrentTick()) {
         // Make sure we are not waiting for the current tick without signalling
         SubmitInfo info{};
-        Flush(info);
+        Flush(info, caller);
     }
     SpartanStats::WaitTimer timer{SpartanStats::tick_wait_ns};
     const auto submitted = diagnose ? std::chrono::steady_clock::now() : start;
@@ -446,7 +468,11 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 #endif
 }
 
-void Scheduler::SubmitExecution(SubmitInfo& info) {
+void Scheduler::SubmitExecution(SubmitInfo& info, std::source_location caller) {
+    if (SpartanStats::enabled) {
+        std::scoped_lock lock{submit_sites_mutex};
+        ++submit_sites[{caller.file_name(), caller.line()}];
+    }
     std::scoped_lock lk{submit_mutex};
     const u64 signal_value = work_semaphore.NextTick();
 

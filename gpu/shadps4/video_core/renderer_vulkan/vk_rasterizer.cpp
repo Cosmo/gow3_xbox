@@ -904,6 +904,7 @@ void Rasterizer::PrintPipeStats() {
     last_repeats[0] = repeats[0];
     last_repeats[1] = repeats[1];
     std::printf("  thread CPU: %s\n", SpartanThreads::CpuReport(seconds).c_str());
+    std::printf("  submissions by site: %s\n", Scheduler::TakeSubmitSites().c_str());
     last_descriptors[0] = descriptors[0];
     last_descriptors[1] = descriptors[1];
     std::copy(std::begin(counts), std::end(counts), std::begin(last_counts));
