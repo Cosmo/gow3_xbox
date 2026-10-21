@@ -78,6 +78,8 @@ enum : std::uint64_t {
     /// End-of-pipe events wait for the recording thread's host copies only when an image is
     /// read back, the one case that protects pages (texture_cache.cpp).
     EopCopyWaitForReadbacks = 1ull << 60,
+    /// Bit 62 is read by the UWP memory layer (xbox/platform/guest_memory.inc, host_protect):
+    /// protection changes one 4 KiB page at a time again.
     // Bits 20-29 are used as raw debug toggles by the camera/object motion and the upscaler.
 };
 inline bool Disabled(std::uint64_t bit) {

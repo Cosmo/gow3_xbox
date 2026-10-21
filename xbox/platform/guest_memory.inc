@@ -258,19 +258,29 @@ static int host_unmap(uintptr_t address,uint64_t size) {
     for(uintptr_t at=address;at<address+size;at+=PAGE) { UwpPage *page=uwp_page(at); if(page) uwp_detach(page,1); }
     return 0;
 }
+extern uint64_t runtime_disabled_optimizations;
+// The 4 KiB pages of one 16 KiB page are one host region (committed or mapped as a whole), so they
+// take one query and one protection change: the GPU's page tracking unprotects 256 KiB windows here
+// under the commit lock, and page by page the Series X kept guest threads waiting on that lock for
+// hundreds of milliseconds per stall (toggle bit 62: page by page, as before).
 static int host_protect(uintptr_t address,uint64_t size,int prot) {
     AcquireSRWLockExclusive(&uwp_commit_lock);
     int result=0;
-    for(uintptr_t at=address&~(uintptr_t)4095;at<address+size;at+=4096) {
-        UwpPage *page=uwp_page(at); if(!page||!page->mapped) continue;
+    const int page_by_page=(int)((__atomic_load_n(&runtime_disabled_optimizations,__ATOMIC_RELAXED)>>62)&1);
+    const uintptr_t last=(address+size+4095)&~(uintptr_t)4095;
+    for(uintptr_t at=address&~(uintptr_t)4095;at<last;) {
+        UwpPage *page=uwp_page(at); if(!page||!page->mapped) { at+=4096; continue; }
         if(page->kind==3||page->kind==4) {
             if(!uwp_swap_protect(page,(unsigned)((at-page->address)/4096),prot)) { result=-1; break; }
-            continue;
+            at+=4096; continue;
         }
+        uintptr_t end=page->address+PAGE<last ? page->address+PAGE : last;
+        if(page_by_page) end=at+4096;
         MEMORY_BASIC_INFORMATION info; DWORD old;
         if(!VirtualQuery((void *)at,&info,sizeof(info))) { result=-1;break; }
-        if(info.State==MEM_COMMIT && !VirtualProtectFromApp((void *)at,4096,win_prot(prot),&old)) { result=-1;break; }
-        page->protection[(at-page->address)/4096]=prot;
+        if(info.State==MEM_COMMIT && !VirtualProtectFromApp((void *)at,end-at,win_prot(prot),&old)) { result=-1;break; }
+        for(uintptr_t sub=at;sub<end;sub+=4096) page->protection[(sub-page->address)/4096]=prot;
+        at=end;
     }
     ReleaseSRWLockExclusive(&uwp_commit_lock);
     return result;
