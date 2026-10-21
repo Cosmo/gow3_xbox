@@ -25,7 +25,7 @@ permissions:
 env:
   # The Mesa fork with the Dozen changes the launcher is tested with.
   MESA_REPOSITORY: Cosmo/mesa_ai_slop_version
-  MESA_COMMIT: 82804960ac7919b24dbf27d1cec2b4d637573731
+  MESA_COMMIT: a76cd3caa23f14839f15259cd3abbfa400b1b217
   # dxil.dll: DirectX Shader Compiler v1.9.2609.
   DXC_URL: https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/dxc_2026_09_29.zip
   DXC_SHA256: ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1
