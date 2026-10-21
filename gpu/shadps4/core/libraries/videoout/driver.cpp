@@ -360,11 +360,17 @@ void VideoOutDriver::Flip(const Request& req) {
                         (wait_now[4] - last_wait[4]) / 1e6, (wait_now[6] - last_wait[6]) / 1e6);
         }
         std::copy(std::begin(wait_now), std::end(wait_now), std::begin(last_wait));
+        static u64 last_inv[3];
+        const u64 inv[3] = {SpartanStats::t_inv_readbacks.load(), SpartanStats::t_inv_buffers.load(),
+                            SpartanStats::t_inv_textures.load()};
         if (stall) {
-            std::printf("       fault handlers: %llu read faults %.1f ms, write faults %.1f ms\n",
+            std::printf("       fault handlers: %llu read faults %.1f ms, write faults %.1f ms; "
+                        "invalidation: readbacks %.1f ms, buffers %.1f ms, textures %.1f ms\n",
                         static_cast<unsigned long long>(rf - last_rf), (trf - last_trf) / 1e6,
-                        (twf - last_twf) / 1e6);
+                        (twf - last_twf) / 1e6, (inv[0] - last_inv[0]) / 1e6,
+                        (inv[1] - last_inv[1]) / 1e6, (inv[2] - last_inv[2]) / 1e6);
         }
+        std::copy(std::begin(inv), std::end(inv), std::begin(last_inv));
         last_rf = rf;
         last_trf = trf;
         last_twf = twf;

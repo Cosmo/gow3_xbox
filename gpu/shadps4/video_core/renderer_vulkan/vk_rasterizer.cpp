@@ -3270,9 +3270,19 @@ bool Rasterizer::InvalidateMemory(VAddr addr, u64 size, bool assume_locks) {
         // Not GPU mapped memory, can skip invalidation logic entirely.
         return false;
     }
-    texture_cache.ResolveReadbacks(addr, size, assume_locks, VideoCore::ReadbackSource::CpuWrite);
-    buffer_cache.InvalidateMemory(addr, size, assume_locks);
-    texture_cache.InvalidateMemory(addr, size);
+    // Statistics (SPARTAN_FRAME_STATS, stall reports): time in each step, all threads.
+    {
+        SpartanStats::Timer timer{SpartanStats::t_inv_readbacks};
+        texture_cache.ResolveReadbacks(addr, size, assume_locks, VideoCore::ReadbackSource::CpuWrite);
+    }
+    {
+        SpartanStats::Timer timer{SpartanStats::t_inv_buffers};
+        buffer_cache.InvalidateMemory(addr, size, assume_locks);
+    }
+    {
+        SpartanStats::Timer timer{SpartanStats::t_inv_textures};
+        texture_cache.InvalidateMemory(addr, size);
+    }
     return true;
 }
 
