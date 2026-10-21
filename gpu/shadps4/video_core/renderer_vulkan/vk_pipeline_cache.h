@@ -185,6 +185,10 @@ private:
     void FinishCompilations();
     void SeedWorkerCaches();
     bool CheckCacheProfile();
+    /// spartanport: the driver's pipeline cache is kept beside the pipeline keys. Dozen stores the
+    /// DXIL of every pipeline in it, so a warm-up only creates the D3D12 pipeline states again.
+    void LoadDriverCache();
+    void SaveDriverCache();
     struct BackgroundWarmup;
     struct WarmStage;
     void ReadWarmEntry(BackgroundWarmup& warm, std::vector<u8>&& data);
@@ -227,6 +231,7 @@ private:
     std::unique_ptr<AsyncCompiler> compiler, capture_compiler;
     std::vector<vk::UniquePipelineCache> worker_pipeline_caches;
     bool worker_caches_seeded = false;
+    size_t driver_cache_size = 0; ///< pipeline_cache data size when last loaded or saved
     /// spartanport: SPARTAN_PARALLEL_WARMUP: WarmUp builds the cached pipelines on these threads.
     struct WarmupPool;
     WarmupPool* warmup_pool = nullptr;

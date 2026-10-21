@@ -512,17 +512,18 @@ struct PipelineCache::WarmupPool {
         std::scoped_lock lock{mutex};
         return jobs.empty() && !running;
     }
+    /// The game does not run behind the loading screen: every core but two, at most six
+    /// (SPARTAN_WARMUP_THREADS sets the count).
     static u32 Threads() {
         const char* env = std::getenv("SPARTAN_PARALLEL_WARMUP");
         if (!env || !*env || *env == '0') {
             return 0;
         }
+        if (const char* count = std::getenv("SPARTAN_WARMUP_THREADS"); count && *count) {
+            return std::clamp(u32(std::strtoul(count, nullptr, 10)), 1u, 16u);
+        }
         const u32 cores = std::max(1u, std::thread::hardware_concurrency());
-#ifdef GOW3_UWP
-        return WarmupThreadCount(cores);
-#else
         return std::clamp(cores > 2 ? cores - 2 : 1u, 1u, 6u);
-#endif
     }
 
     std::atomic<u32> built{0};
@@ -920,10 +921,67 @@ bool PipelineCache::CheckCacheProfile() {
     return true;
 }
 
+static void ReportPipelineBuildTime() {
+    extern std::atomic<u64> g_spartanport_pipeline_total_ns, g_spartanport_pipeline_driver_ns;
+    extern std::atomic<u32> g_spartanport_pipelines_built;
+    const u32 built = std::max(1u, g_spartanport_pipelines_built.load());
+    std::printf("Pipeline build time: %u graphics pipelines, %.1f ms each (driver %.1f ms, the rest "
+                "%.1f ms), %.1f s in all\n",
+                built, g_spartanport_pipeline_total_ns / 1e6 / built, g_spartanport_pipeline_driver_ns / 1e6 / built,
+                (g_spartanport_pipeline_total_ns - g_spartanport_pipeline_driver_ns) / 1e6 / built,
+                g_spartanport_pipeline_total_ns / 1e9);
+}
+
+void PipelineCache::LoadDriverCache() {
+    const auto started = std::chrono::steady_clock::now();
+    std::vector<u8> data;
+    Storage::DataBase::Instance().Load(Storage::BlobType::DriverCache, "driver", data);
+    if (data.empty()) {
+        return;
+    }
+    // The driver ignores the data of another driver build or GPU (its header).
+    const auto device = instance.GetDevice();
+    auto [result, loaded] = device.createPipelineCacheUnique(
+        vk::PipelineCacheCreateInfo{.initialDataSize = data.size(), .pInitialData = data.data()});
+    if (result != vk::Result::eSuccess ||
+        device.mergePipelineCaches(*pipeline_cache, *loaded) != vk::Result::eSuccess) {
+        LOG_WARNING(Render_Vulkan, "spartanport: the saved driver pipeline cache was not loaded");
+        return;
+    }
+    size_t size = 0;
+    if (device.getPipelineCacheData(*pipeline_cache, &size, nullptr) == vk::Result::eSuccess) {
+        driver_cache_size = size;
+    }
+    std::printf("Driver pipeline cache: %zu KiB read, %zu KiB kept, %.1f ms\n", data.size() >> 10,
+                driver_cache_size >> 10, ElapsedNs(started) / 1e6);
+}
+
+void PipelineCache::SaveDriverCache() {
+    const auto device = instance.GetDevice();
+    size_t size = 0;
+    if (device.getPipelineCacheData(*pipeline_cache, &size, nullptr) != vk::Result::eSuccess ||
+        size == driver_cache_size) {
+        return;
+    }
+    std::vector<u8> data(size);
+    if (device.getPipelineCacheData(*pipeline_cache, &size, data.data()) != vk::Result::eSuccess) {
+        return;
+    }
+    data.resize(size);
+    driver_cache_size = size;
+    Storage::DataBase::Instance().Save(Storage::BlobType::DriverCache, "driver", std::move(data));
+    std::printf("Driver pipeline cache: %zu KiB saved\n", size >> 10);
+}
+
+#ifdef GOW3_UWP
+extern "C" uint64_t gow3_uwp_app_memory_usage();
+#endif
+
 void PipelineCache::WarmUp(const std::function<void(u32, u32)>& progress) {
     if (!CheckCacheProfile()) {
         return;
     }
+    LoadDriverCache();
 
     u32 num_pipelines{};
     u32 num_total_pipelines{};
@@ -936,8 +994,20 @@ void PipelineCache::WarmUp(const std::function<void(u32, u32)>& progress) {
         pool = std::make_unique<WarmupPool>(warmup_threads);
         warmup_pool = pool.get();
     }
+    u64 memory_start = 0, memory_peak = 0;
+#ifdef GOW3_UWP
+    memory_start = memory_peak = gow3_uwp_app_memory_usage();
+    auto memory_sampled = started;
+#endif
     // In parallel mode the screen follows the pipelines built, not the ones read.
     const auto report = [&] {
+#ifdef GOW3_UWP
+        if (const auto now = std::chrono::steady_clock::now();
+            now - memory_sampled >= std::chrono::milliseconds(50)) {
+            memory_sampled = now;
+            memory_peak = std::max(memory_peak, gow3_uwp_app_memory_usage());
+        }
+#endif
         if (progress) {
             const u32 done = pool ? pool->built + pool->failed : num_total_pipelines;
             progress(done, std::max(expected, num_total_pipelines));
@@ -972,6 +1042,7 @@ void PipelineCache::WarmUp(const std::function<void(u32, u32)>& progress) {
                 ++num_pipelines;
             }
         });
+    const double read_seconds = ElapsedNs(started) / 1e9;
 
     if (pool) {
         pool->Wait(report);
@@ -994,18 +1065,22 @@ void PipelineCache::WarmUp(const std::function<void(u32, u32)>& progress) {
         warmup_compute.clear();
         pool.reset();
     }
-    std::printf("Pipeline warm-up: %u of %u pipelines in %.2f s (%u threads)\n", num_pipelines,
-                num_total_pipelines,
+    std::printf("Pipeline warm-up: %u of %u pipelines in %.2f s (%u threads; keys read in %.2f s; "
+                "app memory %llu MiB, peak %llu MiB)\n",
+                num_pipelines, num_total_pipelines,
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
-                warmup_threads);
+                warmup_threads, read_seconds, static_cast<unsigned long long>(memory_start >> 20),
+                static_cast<unsigned long long>(memory_peak >> 20));
     LOG_INFO(Render, "Preloaded {} pipelines", num_pipelines);
     ReportPipelineBinaryCache();
+    ReportPipelineBuildTime();
     if (num_total_pipelines > num_pipelines) {
         LOG_WARNING(Render, "{} stale pipelines were found. Consider re-generating the cache",
                     num_total_pipelines - num_pipelines);
     }
 
     Storage::DataBase::Instance().FinishPreload();
+    SaveDriverCache();
 }
 
 void PipelineCache::StartOnDemand() {
@@ -1339,14 +1414,7 @@ void PipelineCache::PumpWarmUp() {
                 binary_key_ns.load() / 1e9, binary_load_ns.load() / 1e9,
                 binary_handles_ns.load() / 1e9, binary_restore_ns.load() / 1e9,
                 binary_compile_ns.load() / 1e9);
-    extern std::atomic<u64> g_spartanport_pipeline_total_ns, g_spartanport_pipeline_driver_ns;
-    extern std::atomic<u32> g_spartanport_pipelines_built;
-    const u32 built = std::max(1u, g_spartanport_pipelines_built.load());
-    std::printf("Pipeline build time: %u graphics pipelines, %.1f ms each (driver %.1f ms, the rest "
-                "%.1f ms), %.1f s in all\n",
-                built, g_spartanport_pipeline_total_ns / 1e6 / built, g_spartanport_pipeline_driver_ns / 1e6 / built,
-                (g_spartanport_pipeline_total_ns - g_spartanport_pipeline_driver_ns) / 1e6 / built,
-                g_spartanport_pipeline_total_ns / 1e9);
+    ReportPipelineBuildTime();
     // The idle threads stay parked (StopWarmUp).
     warm.finished = true;
     SpartanOverlay::SetBackgroundLoading(0, 0);

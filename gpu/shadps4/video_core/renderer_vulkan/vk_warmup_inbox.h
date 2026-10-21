@@ -16,7 +16,8 @@ inline bool UseOnDemandPipelines(bool binary_cache, bool supported, bool capture
     return binary_cache && supported && !capture_only;
 }
 
-/// Warm-up threads: one on four cores or fewer; UWP caps concurrent driver builds at two.
+/// Background warm-up threads (the game runs meanwhile): one on four cores or fewer; UWP caps
+/// concurrent driver builds at two.
 inline unsigned WarmupThreadCount(unsigned cores) {
 #ifdef GOW3_UWP
     return cores <= 4 ? 1u : 2u;

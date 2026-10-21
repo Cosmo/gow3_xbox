@@ -95,13 +95,17 @@ continue to use the renderer's on-demand path. New graphics shaders/pipelines
 compile asynchronously, which can briefly delay a newly encountered effect.
 
 UWP limits runtime compilation to two compile workers, one snapshot worker,
-16 queued compile jobs and two retained IR pools. Pipeline warm-up also uses at
-most two workers. Desktop builds outside UWP retain their existing concurrency.
+16 queued compile jobs and two retained IR pools. The pipeline warm-up behind the
+loading screen runs before the game, on all hardware threads but two (at most six;
+`SPARTAN_WARMUP_THREADS` sets the count). It saves the driver's pipeline cache
+(`driver.vkcache` beside the pipeline keys), so the next start skips Dozen's
+SPIR-V to DXIL step and only creates the D3D12 pipeline states again. Desktop
+builds outside UWP retain their existing concurrency.
 Frames queued defaults to two, with cached host stream buffers. Copy/preparation
 workers stay disabled as in the established Xbox compatibility profile.
 
 Private `graphics-debug.txt` can override `SPARTAN_BACKGROUND_WARMUP`,
-`SPARTAN_PARALLEL_WARMUP`, `SPARTAN_PIPELINE_BINARIES`, `SPARTAN_FRAMES_AHEAD` and
+`SPARTAN_PARALLEL_WARMUP`, `SPARTAN_WARMUP_THREADS`, `SPARTAN_PIPELINE_BINARIES`, `SPARTAN_FRAMES_AHEAD` and
 `SPARTAN_STREAM_MEMORY`, alongside the existing async/readback/cache switches.
 These are renderer settings; cached host stream memory is unrelated to Windows'
 file cache. Normal test profiles disable frame captures and detailed frame/I/O

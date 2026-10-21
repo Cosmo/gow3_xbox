@@ -18,6 +18,7 @@ enum class BlobType : u32 {
     ShaderBinary,
     PipelineKey,
     ShaderProfile,
+    DriverCache, ///< spartanport: vkGetPipelineCacheData after the warm-up
 };
 
 class DataBase {
