@@ -281,7 +281,7 @@ static void loader() {
            key=="SPARTAN_BACKGROUND_WARMUP"||key=="SPARTAN_PARALLEL_WARMUP"||
            key=="SPARTAN_PIPELINE_BINARIES"||key=="SPARTAN_FRAMES_AHEAD"||key=="SPARTAN_STREAM_MEMORY"||
            key=="SPARTAN_RECORDER_TIMINGS"||key=="SPARTAN_BAKED_PIPELINES"||
-           key=="SPARTAN_PERF_DIAG") {
+           key=="SPARTAN_PERF_DIAG"||key=="SPARTAN_PREP_WORKERS"||key=="SPARTAN_COPY_THREADS") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }
@@ -369,8 +369,8 @@ static void loader() {
     if(!std::getenv("SPARTAN_NO_MSAA")) _putenv_s("SPARTAN_NO_MSAA","1");
     if(!std::getenv("SPARTAN_DRAW_PIPE")) _putenv_s("SPARTAN_DRAW_PIPE","1");
     if(!std::getenv("SPARTAN_VK_RECORD_THREAD")) _putenv_s("SPARTAN_VK_RECORD_THREAD","1");
-    _putenv_s("SPARTAN_COPY_THREADS","0");
-    _putenv_s("SPARTAN_PREP_WORKERS","0");
+    if(!std::getenv("SPARTAN_COPY_THREADS")) _putenv_s("SPARTAN_COPY_THREADS","0");
+    if(!std::getenv("SPARTAN_PREP_WORKERS")) _putenv_s("SPARTAN_PREP_WORKERS","0");
     // Finish saved-pipeline loading before play; reserve background compilation for new effects.
     // Compiler concurrency and retained IR pools are bounded separately in the UWP renderer.
     const std::pair<const char*,const char*> performance_defaults[]={
