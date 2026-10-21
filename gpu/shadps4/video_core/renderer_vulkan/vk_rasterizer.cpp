@@ -895,6 +895,15 @@ void Rasterizer::PrintPipeStats() {
                 100.0 * (descriptors[1] - last_descriptors[1]) / cycles, sets / seconds,
                 (counts[1] - last_counts[1]) / sets, (counts[2] - last_counts[2]) / sets,
                 (counts[3] - last_counts[3]) / sets);
+    static u64 last_repeats[2]{};
+    const u64 repeats[2] = {Pipeline::descriptor_repeats[0].load(std::memory_order_relaxed),
+                            Pipeline::descriptor_repeats[1].load(std::memory_order_relaxed)};
+    std::printf("  set contents written before: %.1f%% exactly, %.1f%% apart from buffer offsets\n",
+                100.0 * (repeats[0] - last_repeats[0]) / sets,
+                100.0 * (repeats[1] - last_repeats[1]) / sets);
+    last_repeats[0] = repeats[0];
+    last_repeats[1] = repeats[1];
+    std::printf("  thread CPU: %s\n", SpartanThreads::CpuReport(seconds).c_str());
     last_descriptors[0] = descriptors[0];
     last_descriptors[1] = descriptors[1];
     std::copy(std::begin(counts), std::end(counts), std::begin(last_counts));

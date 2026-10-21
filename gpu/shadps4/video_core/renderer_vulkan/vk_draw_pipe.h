@@ -158,6 +158,7 @@ private:
 
     void Run(std::stop_token stop) {
         Common::SetCurrentThreadName("spartanport:DrawRec");
+        SpartanThreads::RegisterCpu("draw");
         on_stage_b = true;
         stage_b_tid.store(static_cast<u32>(gettid()), std::memory_order_release);
         u64 at = 0;

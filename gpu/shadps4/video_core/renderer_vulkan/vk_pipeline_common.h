@@ -67,6 +67,9 @@ public:
     static inline std::atomic<u64> descriptor_cycles[2]{};
     /// spartanport (statistics): sets written, and their buffer, image and sampler descriptors.
     static inline std::atomic<u64> descriptor_counts[4]{};
+    /// spartanport (statistics, SPARTAN_FRAME_STATS): sets whose contents were written recently,
+    /// exactly [0] and apart from the buffer offsets [1].
+    static inline std::atomic<u64> descriptor_repeats[2]{};
 
 protected:
     [[nodiscard]] std::string GetDebugString() const;

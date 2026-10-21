@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <x86intrin.h>
+#include <xxhash.h>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -61,6 +62,42 @@ void Pipeline::BindResources(DescriptorWrites& set_writes,
         descriptor_counts[1].fetch_add(buffers, std::memory_order_relaxed);
         descriptor_counts[2].fetch_add(images, std::memory_order_relaxed);
         descriptor_counts[3].fetch_add(samplers, std::memory_order_relaxed);
+        // Statistics: how often a set's contents were written before (recently), exactly and
+        // apart from the buffer offsets.
+        static const bool stats = std::getenv("SPARTAN_FRAME_STATS") != nullptr;
+        if (stats) {
+            static std::vector<u64> words;
+            static std::vector<size_t> offsets;
+            static std::array<u64, 1u << 16> seen_exact{}, seen_handles{};
+            words.clear();
+            offsets.clear();
+            words.push_back(std::bit_cast<u64>(*desc_layout));
+            for (const auto& write : set_writes) {
+                words.push_back(u64{write.dstBinding} << 32 | u32(write.descriptorType));
+                for (u32 i = 0; i < write.descriptorCount; ++i) {
+                    if (write.pBufferInfo) {
+                        words.push_back(std::bit_cast<u64>(write.pBufferInfo[i].buffer));
+                        words.push_back(write.pBufferInfo[i].range);
+                        offsets.push_back(words.size());
+                        words.push_back(write.pBufferInfo[i].offset);
+                    } else if (write.pImageInfo) {
+                        words.push_back(std::bit_cast<u64>(write.pImageInfo[i].imageView));
+                        words.push_back(std::bit_cast<u64>(write.pImageInfo[i].sampler));
+                    }
+                }
+            }
+            const u64 exact = XXH3_64bits(words.data(), words.size() * sizeof(u64)) | 1;
+            for (const size_t at : offsets) {
+                words[at] = 0;
+            }
+            const u64 handles = XXH3_64bits(words.data(), words.size() * sizeof(u64)) | 1;
+            u64& slot_exact = seen_exact[exact & 0xffff];
+            u64& slot_handles = seen_handles[handles & 0xffff];
+            descriptor_repeats[0].fetch_add(slot_exact == exact, std::memory_order_relaxed);
+            descriptor_repeats[1].fetch_add(slot_handles == handles, std::memory_order_relaxed);
+            slot_exact = exact;
+            slot_handles = handles;
+        }
     }
 
     // spartanport: without push descriptors (Dozen) a set is allocated and written per draw, which

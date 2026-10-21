@@ -533,10 +533,17 @@ void VideoOutDriver::Flip(const Request& req) {
                     spikes += ms > 1.5 * median;
                 }
                 const double mean = sum / intervals.size();
+                // Flip intervals in vblank-sized bins (judder: a late flip and an early one).
+                u32 bins[5]{};
+                for (const double ms : intervals) {
+                    ++bins[ms < 8.0 ? 0 : ms < 25.0 ? 1 : ms < 41.7 ? 2 : ms < 58.3 ? 3 : 4];
+                }
                 std::printf("Frame pacing: median %.2f ms, stddev %.2f ms, p99 %.2f ms, "
-                            "%u frames over 1.5x median\n",
+                            "%u frames over 1.5x median; intervals <8 ms %u, ~1 vblank %u, "
+                            "~2 %u, ~3 %u, more %u\n",
                             median, std::sqrt(std::max(0.0, sq / intervals.size() - mean * mean)),
-                            sorted[std::min(sorted.size() - 1, sorted.size() * 99 / 100)], spikes);
+                            sorted[std::min(sorted.size() - 1, sorted.size() * 99 / 100)], spikes,
+                            bins[0], bins[1], bins[2], bins[3], bins[4]);
             }
             intervals.clear();
             window_start = now;
@@ -706,6 +713,24 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         }
         timer.Start();
         const auto tick_deadline = std::chrono::steady_clock::now() + vblank_period;
+        // spartanport (SPARTAN_FRAME_STATS): spread of the vblank ticks themselves.
+        static const bool tick_stats = std::getenv("SPARTAN_FRAME_STATS") != nullptr;
+        if (tick_stats) {
+            static auto last_tick = std::chrono::steady_clock::now();
+            static auto report = last_tick;
+            static std::vector<double> ticks;
+            const auto tick = std::chrono::steady_clock::now();
+            ticks.push_back(std::chrono::duration<double, std::milli>(tick - last_tick).count());
+            last_tick = tick;
+            if (tick - report >= std::chrono::seconds(5) && ticks.size() > 2) {
+                std::sort(ticks.begin(), ticks.end());
+                std::printf("Vblank ticks: %zu, min %.2f ms, median %.2f ms, p99 %.2f ms, max %.2f ms\n",
+                            ticks.size(), ticks.front(), ticks[ticks.size() / 2],
+                            ticks[ticks.size() * 99 / 100], ticks.back());
+                ticks.clear();
+                report = tick;
+            }
+        }
 
         if (DebugState.IsGuestThreadsPaused()) {
             DrawLastFrame();
