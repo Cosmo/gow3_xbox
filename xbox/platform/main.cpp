@@ -4,6 +4,8 @@
 #include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.UI.Core.h>
 #include <winrt/Windows.Storage.h>
+#include <winrt/Windows.Storage.AccessCache.h>
+#include <winrt/Windows.Storage.Pickers.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.Gaming.Input.h>
 #include <winrt/Windows.UI.Popups.h>
@@ -113,6 +115,107 @@ static void stop(std::string const& message,bool player) {
     close_app("closed after a message");
 }
 
+// A dump folder is usable when the game's file functions (the FromApp ones) can open its eboot.bin.
+static bool dump_readable(std::string const& dump) {
+    FILE *probe=gow3_uwp_fopen((dump+"\\eboot.bin").c_str(),"rb");
+    if(probe) std::fclose(probe);
+    return probe!=nullptr;
+}
+
+// The folder the player chose in the system's folder picker (the file browser on the Xbox), kept across starts
+// in the app's access list; empty when there is none or it cannot be read any more.
+static std::string chosen_dump() {
+    using namespace winrt::Windows::Storage::AccessCache;
+    try {
+        auto list=StorageApplicationPermissions::FutureAccessList();
+        if(!list.ContainsItem(L"dump")) return {};
+        auto dump=winrt::to_string(list.GetFolderAsync(L"dump").get().Path());
+        const bool readable=!dump.empty()&&dump_readable(dump);
+        std::printf("Chosen game folder %s: %s\n",dump.c_str(),readable ? "found" : "not readable");
+        return readable ? dump : std::string{};
+    } catch(winrt::hresult_error const& error) {
+        std::printf("Chosen game folder: 0x%08x\n",static_cast<unsigned>(error.code()));
+        return {};
+    }
+}
+
+// Opens the system's folder picker on the window's thread: the chosen folder, or null.
+static winrt::Windows::Storage::StorageFolder pick_folder() {
+    using winrt::Windows::Storage::StorageFolder;
+    auto choice=std::make_shared<std::promise<StorageFolder>>();
+    auto answer=choice->get_future();
+    core_window.get().Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,[choice] {
+        try {
+            winrt::Windows::Storage::Pickers::FolderPicker picker;
+            picker.SuggestedStartLocation(winrt::Windows::Storage::Pickers::PickerLocationId::ComputerFolder);
+            picker.FileTypeFilter().Append(L"*");
+            picker.PickSingleFolderAsync().Completed([choice](auto const& operation,winrt::Windows::Foundation::AsyncStatus status) {
+                StorageFolder folder{nullptr};
+                try { if(status==winrt::Windows::Foundation::AsyncStatus::Completed) folder=operation.GetResults(); }
+                catch(winrt::hresult_error const&) {}
+                choice->set_value(folder);
+            });
+        } catch(winrt::hresult_error const& error) {
+            std::printf("Folder picker failed: 0x%08x\n",static_cast<unsigned>(error.code()));
+            choice->set_value(StorageFolder{nullptr});
+        }
+    });
+    return answer.get();
+}
+
+// A folder from the picker: its path when the game can read it (then it is remembered for later starts), else empty
+// with the reason for the player in `problem`. The picker's own access is checked too, so the log tells a folder
+// without the game from one the game's file functions cannot read.
+static std::string use_picked(winrt::Windows::Storage::StorageFolder const& folder,std::string& problem) {
+    auto dump=winrt::to_string(folder.Path());
+    bool listed=false;
+    unsigned listed_error=0;
+    try { folder.GetFileAsync(L"eboot.bin").get(); listed=true; }
+    catch(winrt::hresult_error const& error) { listed_error=static_cast<unsigned>(error.code()); }
+    const bool readable=!dump.empty()&&dump_readable(dump);
+    const DWORD read_error=readable ? 0 : GetLastError();
+    std::printf("Folder picker: '%s'; eboot.bin through the picker's access: %s (0x%08x), through the game's file "
+                "functions: %s (error %lu)\n",dump.c_str(),listed ? "found" : "not found",listed_error,
+                readable ? "readable" : "not readable",read_error);
+    if(readable) {
+        winrt::Windows::Storage::AccessCache::StorageApplicationPermissions::FutureAccessList().AddOrReplace(L"dump",folder);
+        return dump;
+    }
+    problem=listed ? "The game cannot read its files from "+dump+".\n\nCopy the dump to a USB drive and choose it there."
+                   : "There is no eboot.bin in "+(dump.empty() ? std::string("this folder") : dump)+".\n\nChoose the folder of "
+                     "the dump: the one with eboot.bin, sce_module, sce_sys and dvdroot_ps4.";
+    return {};
+}
+
+// Asks for the dump folder until the game can read one; empty when the player closes the app instead.
+static std::string choose_dump(std::string text) {
+    for(;;) {
+        if(ask(text,{"Choose folder","Close"})!=0) return {};
+        auto folder=pick_folder();
+        if(!folder) { std::puts("Folder picker: nothing chosen"); continue; }
+        if(auto dump=use_picked(folder,text);!dump.empty()) return dump;
+    }
+}
+
+// The launcher menu's "Choose game folder" (vk_presenter.cpp). The running game keeps the folder it started with, so a
+// new folder is remembered and the app closes after asking the player to start it again. Otherwise `message` gets what
+// the menu shows (empty when the picker was cancelled).
+extern "C" void gow3_uwp_choose_game_folder(char *message,size_t size) {
+    auto folder=pick_folder();
+    std::string text;
+    if(!folder) std::puts("Folder picker: nothing chosen");
+    else {
+        const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP");
+        auto dump=use_picked(folder,text);
+        if(!dump.empty()&&current&&_stricmp(dump.c_str(),current)==0) text="This is already the game folder.";
+        else if(!dump.empty()) {
+            ask("Game folder: "+dump+"\n\nStart the app again to play from this folder.",{"OK"});
+            close_app("game folder changed");
+        }
+    }
+    std::snprintf(message,size,"%s",text.c_str());
+}
+
 // The player's dump: the folder \dumps\GodOfWar3 on a USB drive.
 static std::string find_dump() {
     std::vector<std::string> roots;
@@ -163,7 +266,7 @@ static bool prepare_game(std::string const& dump,std::string const& prepared,boo
         {"sce_module\\libc.prx",&files.libc},{"sce_module\\libSceFios2.prx",&files.fios},{"sce_sys\\param.sfo",&files.sfo}};
     for(auto [name,data]:inputs) {
         if(!read_file(dump+"\\"+name,*data)||data->empty()) {
-            stop("The game dump in "+dump+" is incomplete: "+name+" is missing or empty.\n\nCopy the whole dump to the USB drive again.",player);
+            stop("The game dump in "+dump+" is incomplete: "+name+" is missing or empty.\n\nCopy the whole dump again.",player);
             return false;
         }
     }
@@ -281,20 +384,24 @@ static void loader() {
            key=="SPARTAN_BACKGROUND_WARMUP"||key=="SPARTAN_PARALLEL_WARMUP"||key=="SPARTAN_WARMUP_THREADS"||
            key=="SPARTAN_PIPELINE_BINARIES"||key=="SPARTAN_FRAMES_AHEAD"||key=="SPARTAN_STREAM_MEMORY"||
            key=="SPARTAN_RECORDER_TIMINGS"||key=="SPARTAN_BAKED_PIPELINES"||
-           key=="SPARTAN_PERF_DIAG"||key=="SPARTAN_PREP_WORKERS"||key=="SPARTAN_COPY_THREADS") {
+           key=="SPARTAN_PERF_DIAG"||key=="SPARTAN_PREP_WORKERS"||key=="SPARTAN_COPY_THREADS"||key=="SPARTAN_CHOOSE_DUMP") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }
     }
     game_mode=(mode=="boot");
     _putenv_s("SPARTAN_UWP_LAUNCHER",mode=="boot" ? "1" : "0");
+    // Players: the folder they chose before, else \dumps\GodOfWar3 on a USB drive, else the folder picker.
+    // SPARTAN_CHOOSE_DUMP=1 (graphics-debug.txt) opens the picker even when a dump is found.
     if(player) {
-        dump=find_dump();
-        if(dump.empty()) {
-            stop("No game dump found.\n\nCopy your God of War III Remastered dump (the folder with eboot.bin) to a USB drive "
-                 "as \\dumps\\GodOfWar3, connect the drive and start the app again.",true);
-            finished=true; return;
-        }
+        const char* force=std::getenv("SPARTAN_CHOOSE_DUMP");
+        const bool choose=force&&*force=='1';
+        if(!choose) dump=chosen_dump();
+        if(!choose&&dump.empty()) dump=find_dump();
+        if(dump.empty()) dump=choose_dump(choose ? "Choose the game folder." :
+            "No game found.\n\nChoose the folder of your God of War III Remastered dump (the folder with eboot.bin), "
+            "or copy the dump to a USB drive as \\dumps\\GodOfWar3.");
+        if(dump.empty()) close_app("no game folder chosen");
     }
     _putenv_s("SPARTAN_PRECOMPILE_DUMP",dump.c_str());
     std::string user=winrt::to_string(local)+"\\user";

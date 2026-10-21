@@ -9,6 +9,8 @@
 #ifdef GOW3_UWP
 #include <SDL3/SDL_surface.h>
 #include "overlay.h"
+// xbox/platform/main.cpp: the launcher's "Choose game folder".
+extern "C" void gow3_uwp_choose_game_folder(char* message, size_t size);
 #endif
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
@@ -342,7 +344,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         for (;;) {
             int action=1;
             if (!compile_once) {
-                SpartanOverlay::BeginChoice(title,{"Start game","Precompile shaders"},{},0);
+                SpartanOverlay::BeginChoice(title,{"Start game","Precompile shaders","Choose game folder"},{},0);
                 action=-1;
                 while(action==-1) {
                     // The dedicated UWP window thread already polls controller input.
@@ -351,6 +353,13 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                     std::this_thread::sleep_for(std::chrono::milliseconds(25));
                 }
                 if(action==0) break;
+                if(action==2) {
+                    // A new folder closes the app (xbox/platform/main.cpp); otherwise the menu shows why not.
+                    char message[512]{};
+                    gow3_uwp_choose_game_folder(message,sizeof message);
+                    if(*message) title=message;
+                    continue;
+                }
                 if(action!=1) continue;
             }
             compile_once=false;

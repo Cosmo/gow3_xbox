@@ -15,9 +15,10 @@ SpartanPort's README.
 2. Device Portal → **Add** → the `.appx` and the package in `Dependencies`. If Dev Home lists the
    app as an App, set its type to **Game**.
 3. Copy your dump (the folder with `eboot.bin`, `sce_module`, `sce_sys` and `dvdroot_ps4`) to a USB
-   drive as `\dumps\GodOfWar3` and connect the drive to the Xbox.
+   drive and connect the drive to the Xbox. Any folder works; the app looks in `\dumps\GodOfWar3`
+   by itself and otherwise asks you to choose the folder once.
 4. Start **God of War 3 Launcher**: **Prepare** (once), **Precompile shaders** (once, recommended),
-   then **Start game**.
+   then **Start game**. **Choose game folder** in the same menu switches to another dump.
 
 In the game, **RS + LT** (click the right stick while holding the left trigger) opens the menu:
 render resolution (720p by default), overlay, Automatic QTE, vibration and more.
