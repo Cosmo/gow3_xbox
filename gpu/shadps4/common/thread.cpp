@@ -114,10 +114,25 @@ bool AccurateSleep(const std::chrono::nanoseconds duration, std::chrono::nanosec
     LARGE_INTEGER interval{
         .QuadPart = -1 * (duration.count() / 100u),
     };
-    HANDLE timer = ::CreateWaitableTimer(NULL, TRUE, NULL);
-    SetWaitableTimer(timer, &interval, 0, NULL, NULL, 0);
-    const auto ret = WaitForSingleObjectEx(timer, INFINITE, interruptible);
-    ::CloseHandle(timer);
+    // spartanport: a high-resolution timer, one per thread. An ordinary one wakes on the system
+    // timer tick (15.6 ms unless something raises the resolution): the 60 Hz vblank then ticked
+    // after 15.6 or 31.2 ms, and the game flipped unevenly.
+    struct Timer {
+        HANDLE handle = [] {
+            HANDLE timer = ::CreateWaitableTimerExW(nullptr, nullptr,
+                                                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                                    TIMER_ALL_ACCESS);
+            return timer ? timer : ::CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+        }();
+        ~Timer() {
+            if (handle) {
+                ::CloseHandle(handle);
+            }
+        }
+    };
+    thread_local Timer timer;
+    SetWaitableTimer(timer.handle, &interval, 0, NULL, NULL, 0);
+    const auto ret = WaitForSingleObjectEx(timer.handle, INFINITE, interruptible);
 
     if (remaining) {
         const auto end_sleep = std::chrono::high_resolution_clock::now();
