@@ -37,6 +37,12 @@ static std::atomic<bool> finished{false};
 static std::atomic<bool> game_mode{false};
 static uint64_t memory_limit_override=0;
 extern "C" void runtime_memory_start_paging();
+extern "C" void runtime_wait_report(void);
+extern "C" void runtime_sample_threads(void);
+#ifdef GOW3_LINK_RENDERER
+extern "C" void gow3_gpu_state(char *out,size_t size);
+extern "C" void gow3_gpu_history(char *out,size_t size);
+#endif
 extern "C" void gow3_uwp_pager_thread_init() {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 }
@@ -490,7 +496,8 @@ static void loader() {
            key=="SPARTAN_BACKGROUND_WARMUP"||key=="SPARTAN_PARALLEL_WARMUP"||key=="SPARTAN_WARMUP_THREADS"||
            key=="SPARTAN_PIPELINE_BINARIES"||key=="SPARTAN_FRAMES_AHEAD"||key=="SPARTAN_STREAM_MEMORY"||
            key=="SPARTAN_RECORDER_TIMINGS"||key=="SPARTAN_BAKED_PIPELINES"||
-           key=="SPARTAN_PERF_DIAG"||key=="SPARTAN_PREP_WORKERS"||key=="SPARTAN_COPY_THREADS"||key=="SPARTAN_CHOOSE_DUMP") {
+           key=="SPARTAN_PERF_DIAG"||key=="SPARTAN_PREP_WORKERS"||key=="SPARTAN_COPY_THREADS"||key=="SPARTAN_CHOOSE_DUMP"||
+           key=="SPARTAN_READ_FAULT_EVERY") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }
@@ -738,6 +745,28 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
                 if(sample==5&&!finished.load()&&!game_mode.load()) {
                     std::fputs("STOP: 30 second milestone watchdog\n",stderr); std::fflush(nullptr); ExitProcess(124);
                 }
+            }
+        }).detach();
+        // LocalState\threads.txt asks for the thread report in loader.log: what every game thread waits for (a hang).
+        std::thread([request=std::wstring(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())+L"\\threads.txt"] {
+            WIN32_FILE_ATTRIBUTE_DATA attributes{};
+            DeleteFileFromAppW(request.c_str());
+            for(;;) {
+                if(GetFileAttributesExFromAppW(request.c_str(),GetFileExInfoStandard,&attributes)) {
+                    DeleteFileFromAppW(request.c_str());
+                    runtime_wait_report();
+#ifdef GOW3_LINK_RENDERER
+                    char gpu[256]{};
+                    gow3_gpu_state(gpu,sizeof gpu);
+                    std::printf("GPU state: %s\n",gpu);
+                    char history[1400]{};
+                    gow3_gpu_history(history,sizeof history);
+                    std::printf("GPU last packets (opcode@address): %s\n",history);
+                    std::fflush(stdout);
+#endif
+                    runtime_sample_threads();
+                }
+                Sleep(500);
             }
         }).detach();
         // Scripts request a normal close through LocalState\quit.txt, the same path as closing the window,

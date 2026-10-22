@@ -20,6 +20,7 @@ typedef struct Sema {
     int32_t count, initial, maximum;
     unsigned active;
     int deleted;
+    char name[32];
     Waiter *first;
     struct Sema *next;
 } Sema;
@@ -55,12 +56,13 @@ static ABI int32_t sem_create(uint32_t *out,const char *name,uint32_t attr,
     pthread_mutex_lock(&lock);
     if (next_id==UINT32_MAX) { pthread_mutex_unlock(&lock); free(s); return ERR(28); }
     s->id=next_id++; s->attr=attr; s->count=s->initial=initial; s->maximum=maximum;
+    snprintf(s->name,sizeof(s->name),"%s",name);
     s->next=registry; registry=s; *out=s->id; ++created;
     printf("Runtime: semaphore id=%u, attr=%u, initial=%d, max=%d\n",s->id,attr,initial,maximum);
     pthread_mutex_unlock(&lock);
     return 0;
 }
-static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block) {
+static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block,uintptr_t caller) {
     pthread_mutex_lock(&lock);
     Sema *s=find(id);
     int32_t result=0;
@@ -84,6 +86,7 @@ static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block) 
         *tail=&w; ++s->active;
         uint64_t deadline=timeout ? now_ns()+(uint64_t)*timeout*1000 : 0;
         struct timespec end={.tv_sec=(time_t)(deadline/1000000000),.tv_nsec=(long)(deadline%1000000000)};
+        runtime_wait_begin(timeout ? "semaphore (timed)" : "semaphore",s->name,(const void *)(uintptr_t)s->id,NULL,caller);
         while (!w.done) {
             int e=timeout ? pthread_cond_timedwait(&w.event,&lock,&end) : pthread_cond_wait(&w.event,&lock);
             if (e==ETIMEDOUT && !w.done) {
@@ -92,6 +95,7 @@ static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block) 
                 *p=w.next; w.result=ERR(60); w.done=1; ++timed_out;
             } else if (e!=ETIMEDOUT) host_check(e);
         }
+        runtime_wait_end();
         result=w.result;
         if (!result) ++acquired;
         if (timeout) {
@@ -104,8 +108,8 @@ static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block) 
     pthread_mutex_unlock(&lock);
     return result;
 }
-static ABI int32_t sem_wait(uint32_t id,int32_t need,uint32_t *timeout) { return wait_count(id,need,timeout,1); }
-static ABI int32_t sem_poll(uint32_t id,int32_t need) { return wait_count(id,need,NULL,0); }
+static ABI int32_t sem_wait(uint32_t id,int32_t need,uint32_t *timeout) { return wait_count(id,need,timeout,1,(uintptr_t)__builtin_return_address(0)); }
+static ABI int32_t sem_poll(uint32_t id,int32_t need) { return wait_count(id,need,NULL,0,0); }
 static ABI int32_t sem_signal(uint32_t id,int32_t count) {
     pthread_mutex_lock(&lock);
     Sema *s=find(id);

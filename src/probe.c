@@ -130,6 +130,71 @@ static void describe_address(char *out, size_t size, uintptr_t address) {
     }
     snprintf(out,size,"%p",(void *)address);
 }
+#ifdef GOW3_UWP
+#include <tlhelp32.h>
+/* Where the host threads are right now (thread report, LocalState\threads.txt): each is paused (the GPU threads
+ * three times, 100 ms apart, the others once) and its stack unwound while paused; it runs again before anything is
+ * printed. A thread that spins shows the same frames each time; a blocked one shows what it waits in. */
+void runtime_sample_threads(void) {
+    static const char *const wanted[]={"spartanport:DrawRec","shadPS4:GpuCommandProcessor","spartanport:VkRecorder"};
+    HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD,0);
+    if (snap==INVALID_HANDLE_VALUE) { printf("Thread samples: no thread list (%lu)\n",GetLastError()); return; }
+    THREADENTRY32 entry={.dwSize=sizeof(entry)};
+    const DWORD pid=GetCurrentProcessId(), self=GetCurrentThreadId();
+    for (BOOL ok=Thread32First(snap,&entry);ok;ok=Thread32Next(snap,&entry)) {
+        if (entry.th32OwnerProcessID!=pid || entry.th32ThreadID==self) continue;
+        HANDLE h=OpenThread(THREAD_QUERY_LIMITED_INFORMATION|THREAD_SUSPEND_RESUME|THREAD_GET_CONTEXT,FALSE,entry.th32ThreadID);
+        if (!h) continue;
+        char name[64]="";
+        PWSTR wide=NULL;
+        if (SUCCEEDED(GetThreadDescription(h,&wide)) && wide) {
+            WideCharToMultiByte(CP_UTF8,0,wide,-1,name,sizeof(name),NULL,NULL);
+            LocalFree(wide);
+        }
+        int match=0;
+        for (size_t i=0;i<sizeof(wanted)/sizeof(*wanted);++i) match|=!strcmp(name,wanted[i]);
+        if (!name[0]) snprintf(name,sizeof(name),"tid %lu",entry.th32ThreadID);
+        for (int sample=0;sample<(match ? 3 : 1);++sample) {
+            DWORD64 frames[16];
+            unsigned count=0;
+            if (SuspendThread(h)==(DWORD)-1) { printf("Thread samples: %s cannot be paused (%lu)\n",name,GetLastError()); break; }
+            _Alignas(16) CONTEXT c;
+            memset(&c,0,sizeof(c));
+            c.ContextFlags=CONTEXT_FULL;
+            if (GetThreadContext(h,&c)) {
+                for (;count<16 && c.Rip;++count) {
+                    frames[count]=c.Rip;
+                    DWORD64 base=0,establisher=0,previous=c.Rsp;
+                    void *handler_data=NULL;
+                    PRUNTIME_FUNCTION function=RtlLookupFunctionEntry(c.Rip,&base,NULL);
+                    if (function) RtlVirtualUnwind(UNW_FLAG_NHANDLER,base,c.Rip,function,&c,&handler_data,&establisher,NULL);
+                    else {
+                        SIZE_T got=0;
+                        if (!ReadProcessMemory(GetCurrentProcess(),(void *)(uintptr_t)c.Rsp,&c.Rip,sizeof(c.Rip),&got) || got!=sizeof(c.Rip)) { ++count; break; }
+                        c.Rsp+=sizeof(c.Rip);
+                    }
+                    if (c.Rsp<=previous) { ++count; break; }
+                }
+            } else count=0;
+            const DWORD context_error=count ? 0 : GetLastError();
+            ResumeThread(h);
+            if (!count) { printf("Thread samples: %s context not readable (%lu)\n",name,context_error); break; }
+            char line[1600];
+            size_t used=0;
+            for (unsigned i=0;i<count && used+80<sizeof(line);++i) {
+                char where[160];
+                describe_address(where,sizeof(where),(uintptr_t)frames[i]);
+                used+=(size_t)snprintf(line+used,sizeof(line)-used,"%s%s",i ? " < " : "",where);
+            }
+            printf("Thread sample %s #%d: %s\n",name,sample+1,line);
+            if (match) Sleep(100);
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    fflush(stdout);
+}
+#endif
 static int fatal_reported;
 static LONG fatal_exception(EXCEPTION_POINTERS *info) {
     if (__atomic_exchange_n(&fatal_reported,1,__ATOMIC_ACQ_REL)) { Sleep(INFINITE); }

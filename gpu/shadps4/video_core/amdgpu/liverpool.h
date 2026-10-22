@@ -114,6 +114,13 @@ public:
 
     /// spartanport: also the draw recording thread and the fences it deferred are done (see
     /// work_retired). sceGnmSubmitDone does not block the guest when this is true.
+    /// spartanport: queue state for the thread report (gow3_gpu_state in liverpool.cpp).
+    u32 PendingSubmits() const {
+        return num_submits.load(std::memory_order_relaxed);
+    }
+    u32 PendingCommands() const {
+        return num_commands.load(std::memory_order_relaxed);
+    }
     bool IsGpuIdle() const {
         static const bool use_retired = [] {
             const char* env = std::getenv("SPARTAN_WORK_RETIRED");

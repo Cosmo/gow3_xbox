@@ -16,6 +16,12 @@
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
 
+#ifdef GOW3_UWP
+extern "C" void runtime_wait_begin(const char* kind, const char* object, const void* address,
+                                   const void* holder, uintptr_t caller);
+extern "C" void runtime_wait_end(void);
+#endif
+
 namespace Libraries::Kernel {
 
 extern boost::asio::io_context io_context;
@@ -479,7 +485,16 @@ int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev,
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
+#ifdef GOW3_UWP
+    // spartanport: noted for the thread report (src/runtime_thread.c, LocalState\threads.txt on the Xbox).
+    const std::string name{equeue->GetName()};
+    runtime_wait_begin(timo ? "event queue (timed)" : "event queue", name.c_str(), equeue, nullptr,
+                       reinterpret_cast<uintptr_t>(__builtin_return_address(0)));
+#endif
     *out = equeue->WaitForEvents(ev, num, timo);
+#ifdef GOW3_UWP
+    runtime_wait_end();
+#endif
 
     if (*out == 0) {
         return ORBIS_KERNEL_ERROR_ETIMEDOUT;

@@ -408,16 +408,77 @@ int runtime_file_paged_selftest(void *buffer,uint64_t size) {
     return result;
 }
 #endif
+/* SPARTAN_READ_FAULT_EVERY=N (developer test of the retries below): every Nth read fails, the one after it
+ * returns half of what was asked. */
+static unsigned read_fault_every(void) {
+    static int v=-1;
+    if (v<0) { const char *e=getenv("SPARTAN_READ_FAULT_EVERY"); v=e ? atoi(e) : 0; if (v<0) v=0; }
+    return (unsigned)v;
+}
+static ssize_t read_once(int h,void *buffer,uint64_t size,int64_t offset,int positioned) {
+    if (read_fault_every()) {
+        static unsigned count;
+        const unsigned n=__atomic_add_fetch(&count,1,__ATOMIC_RELAXED)%read_fault_every();
+        if (n==0) { errno=EIO; return -1; }
+        if (n==1 && size>1) size/=2;
+    }
+#ifdef GOW3_UWP
+    if(mapped_io_buffer(buffer,size)) return paged_io(h,buffer,size,offset,positioned,0);
+#endif
+    touch_for_write(buffer,size);
+    return measured_read(h,buffer,size,offset,positioned);
+}
+static void pause_ms(unsigned ms) {
+#ifdef _WIN32
+    Sleep(ms);
+#else
+    struct timespec t={(time_t)(ms/1000),(long)(ms%1000)*1000000L};
+    nanosleep(&t,NULL);
+#endif
+}
+/* A read that fails, or returns less than asked before the end of the file, is tried again three times (10, 50 and
+ * 100 ms later) and logged: a game waiting for data that never arrives looks hung. */
+static ssize_t read_retrying(int fd,int h,void *buffer,uint64_t size,int64_t offset,int positioned) {
+    ssize_t n=read_once(h,buffer,size,offset,positioned);
+    if (n>=0 && (uint64_t)n==size) return n;
+    static const unsigned waits[]={10,50,100};
+    const int64_t start=positioned ? offset : (int64_t)host_lseek(h,0,SEEK_CUR)-(n>0 ? n : 0);
+    const char *path=fd>=3 && fd<MAX_FILES ? files[fd].path : "?";
+    uint64_t total=n>0 ? (uint64_t)n : 0;
+    int error=n<0 ? errno : 0;
+    for (int attempt=0;;++attempt) {
+        if (!error) {
+            HostStat s;
+            if (host_fstat(h,&s) || start+(int64_t)total>=(int64_t)s.st_size) return (ssize_t)total; /* end of file */
+        }
+        char what[96];
+        if (error) snprintf(what,sizeof(what),"error %d (%s)",error,strerror(error));
+        else snprintf(what,sizeof(what),"%llu bytes short",(unsigned long long)(size-total));
+        if (attempt==3) {
+            printf("File read: %s, %llu bytes at %lld: %s after 3 more tries\n",path,(unsigned long long)size,(long long)start,what);
+            break;
+        }
+        printf("File read: %s, %llu bytes at %lld: %s, trying again in %u ms\n",path,(unsigned long long)size,(long long)start,what,waits[attempt]);
+        pause_ms(waits[attempt]);
+        const ssize_t more=read_once(h,(unsigned char *)buffer+total,size-total,start+(int64_t)total,positioned);
+        if (more<0) { error=errno; continue; }
+        error=0;
+        total+=(uint64_t)more;
+        if (total==size) {
+            printf("File read: %s, %llu bytes at %lld: complete on try %d\n",path,(unsigned long long)size,(long long)start,attempt+2);
+            return (ssize_t)total;
+        }
+    }
+    if (!total && error) { errno=error; return -1; }
+    return (ssize_t)total;
+}
 static int64_t do_read(int fd,void *buffer,uint64_t size) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
     const uint64_t start=io_now();
-    ssize_t n;
-#ifdef GOW3_UWP
-    if(mapped_io_buffer(buffer,size)) n=paged_io(h,buffer,size,0,0,0);
-    else
-#endif
-    { touch_for_write(buffer,size); n=measured_read(h,buffer,size,0,0); }
+    runtime_wait_begin("file read",fd>=3 && fd<MAX_FILES ? files[fd].path : NULL,NULL,NULL,0);
+    ssize_t n=read_retrying(fd,h,buffer,size,0,0);
+    runtime_wait_end();
     const int error=errno;
     io_finished(start,size,n);
     errno=error;
@@ -429,12 +490,9 @@ static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
     const uint64_t start=io_now();
-    ssize_t n;
-#ifdef GOW3_UWP
-    if(mapped_io_buffer(buffer,size)) n=paged_io(h,buffer,size,offset,1,0);
-    else
-#endif
-    { touch_for_write(buffer,size); n=measured_read(h,buffer,size,offset,1); }
+    runtime_wait_begin("file read",fd>=3 && fd<MAX_FILES ? files[fd].path : NULL,NULL,NULL,0);
+    ssize_t n=read_retrying(fd,h,buffer,size,offset,1);
+    runtime_wait_end();
     const int error=errno;
     io_finished(start,size,n);
     errno=error;

@@ -93,22 +93,25 @@ uint64_t runtime_process_time_us(void) { return process_time(); }
 uint64_t runtime_process_time_counter(void) { return process_time_counter(); }
 uint64_t runtime_tsc_frequency(void) { return tsc_frequency(); }
 uint64_t runtime_read_tsc(void) { return read_tsc(); }
-static int sleep_ns(uint64_t ns) {
+/* Sleeps are noted for the thread report: a thread that polls in a loop shows up sleeping, called from its loop. */
+static int sleep_ns(uint64_t ns,uintptr_t caller) {
     if (!ns) runtime_thread_count_yield(1);
+    else runtime_wait_begin("sleep",NULL,NULL,NULL,caller);
 #ifdef _WIN32
     compat_sleep_ns(ns);
 #else
     struct timespec t={.tv_sec=(time_t)(ns/1000000000),.tv_nsec=(long)(ns%1000000000)};
-    while (nanosleep(&t,&t)) if (errno!=EINTR) return errno;
+    while (nanosleep(&t,&t)) if (errno!=EINTR) { runtime_wait_end(); return errno; }
 #endif
+    if (ns) runtime_wait_end();
     return 0;
 }
-static ABI int32_t kernel_usleep(uint32_t usec) { sleep_ns((uint64_t)usec*1000); return 0; }
-static ABI int32_t posix_usleep(uint32_t usec) { sleep_ns((uint64_t)usec*1000); return 0; }
-static ABI uint32_t posix_sleep(uint32_t seconds) { sleep_ns((uint64_t)seconds*1000000000); return 0; }
+static ABI int32_t kernel_usleep(uint32_t usec) { sleep_ns((uint64_t)usec*1000,(uintptr_t)__builtin_return_address(0)); return 0; }
+static ABI int32_t posix_usleep(uint32_t usec) { sleep_ns((uint64_t)usec*1000,(uintptr_t)__builtin_return_address(0)); return 0; }
+static ABI uint32_t posix_sleep(uint32_t seconds) { sleep_ns((uint64_t)seconds*1000000000,(uintptr_t)__builtin_return_address(0)); return 0; }
 static ABI int32_t posix_nanosleep(const GuestTimespec *rq,GuestTimespec *rem) {
     if (!rq || rq->nsec<0 || rq->nsec>=1000000000 || rq->sec<0) return fail_posix(EINVAL);
-    sleep_ns((uint64_t)rq->sec*1000000000+(uint64_t)rq->nsec);
+    sleep_ns((uint64_t)rq->sec*1000000000+(uint64_t)rq->nsec,(uintptr_t)__builtin_return_address(0));
     if (rem) { rem->sec=0; rem->nsec=0; }
     return 0;
 }

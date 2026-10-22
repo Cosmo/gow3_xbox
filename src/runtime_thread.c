@@ -50,6 +50,12 @@ typedef struct GuestThread {
     ThreadAttr attr;
     char name[32];
     int detached, finished, joined, host_owned;
+    /* What the thread waits for (runtime_wait_begin), for runtime_wait_report. */
+    const char *wait_kind;
+    char wait_object[40];
+    const void *wait_address, *wait_holder;
+    uintptr_t wait_caller;
+    uint64_t wait_since;
 #ifdef _WIN32
     spartanport_jmp_buf exit_jump; /* no SEH unwinding through guest frames */
 #else
@@ -140,6 +146,48 @@ void runtime_thread_attach_main(void) {
     GuestThread *t=runtime_thread_current();
     snprintf(t->name,sizeof(t->name),"main");
     set_host_name(t->name);
+}
+/* The calling thread's record (NULL for host threads that never ran guest code): owners of guest locks. */
+void *runtime_thread_self(void) { return current; }
+static uint64_t monotonic_ns(void) {
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
+    return (uint64_t)t.tv_sec*1000000000u+(uint64_t)t.tv_nsec;
+}
+/* A blocking call notes what it waits for: the kind, the object's name and address, the thread holding it (if
+ * known) and the guest code that called. runtime_wait_end clears it when the call returns. */
+void runtime_wait_begin(const char *kind,const char *object,const void *address,const void *holder,uintptr_t caller) {
+    GuestThread *t=current;
+    if (!t) return;
+    snprintf(t->wait_object,sizeof(t->wait_object),"%s",object ? object : "");
+    t->wait_address=address; t->wait_holder=holder; t->wait_caller=caller;
+    t->wait_since=monotonic_ns();
+    __atomic_store_n(&t->wait_kind,kind,__ATOMIC_RELEASE);
+}
+void runtime_wait_end(void) {
+    GuestThread *t=current;
+    if (t) __atomic_store_n(&t->wait_kind,(const char *)NULL,__ATOMIC_RELEASE);
+}
+static void cpu_report(void);
+/* Every guest thread and what it waits for, then the CPU time of every thread: a hang shows as threads waiting
+ * for each other, for something nothing delivers, or as one thread busy in a loop. */
+void runtime_wait_report(void) {
+    const uint64_t now=monotonic_ns();
+    pthread_mutex_lock(&lock);
+    printf("Thread report:\n");
+    for (GuestThread *t=threads;t;t=t->next) {
+        if (t->finished) continue;
+        const char *kind=__atomic_load_n(&t->wait_kind,__ATOMIC_ACQUIRE);
+        if (!kind) { printf("  %-24s running\n",t->name); continue; }
+        char holder[48]="";
+        for (GuestThread *o=threads;t->wait_holder && o;o=o->next)
+            if (o==t->wait_holder) { snprintf(holder,sizeof(holder),", held by %s",o->name); break; }
+        const uint64_t since=t->wait_since; /* a wait that began during the report counts as new */
+        printf("  %-24s waits %.1f s for %s%s%s at %p%s, called from %p\n",t->name,since<now ? (double)(now-since)/1e9 : 0.0,kind,
+               t->wait_object[0] ? " " : "",t->wait_object,t->wait_address,holder,(void *)t->wait_caller);
+    }
+    pthread_mutex_unlock(&lock);
+    cpu_report();
+    fflush(stdout);
 }
 static GuestThread *find_thread(void *handle) {
     GuestThread *found=NULL;
@@ -335,7 +383,9 @@ static ABI int32_t thread_join(GuestThread *t,void **result) {
     if (t->detached || t->joined) return ERR(22);
     t->joined=1;
     void *value=NULL;
+    runtime_wait_begin("thread end",t->name,t,t,(uintptr_t)__builtin_return_address(0));
     int e=pthread_join(t->host,&value);
+    runtime_wait_end();
     if (e) { fprintf(stderr,"STOP: host pthread_join failed: %d\n",e); exit(21); }
     if (result) *result=t->result;
     pthread_mutex_lock(&lock); ++joined_count; pthread_mutex_unlock(&lock);

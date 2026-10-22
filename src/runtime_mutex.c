@@ -15,6 +15,8 @@ typedef struct {
     unsigned char guest_reserved[0x20];
     uint32_t libc_flags;
     pthread_mutex_t native;
+    void *owner;   /* the guest thread holding it, for the thread report (runtime_wait_report) */
+    char name[32];
 } GuestMutex;
 _Static_assert(offsetof(GuestMutex,libc_flags)==0x20,"Guest libc mutex flags offset");
 static size_t created, locks, unlocks;
@@ -52,7 +54,6 @@ static ABI int32_t attr_destroy(GuestAttr **attr) {
     free(*attr); *attr = NULL; return 0;
 }
 static ABI int32_t mutex_init(GuestMutex **out, GuestAttr **attr, const char *name) {
-    (void)name;
     if (!out || (attr && !*attr)) return orbis_error(EINVAL);
     int type = attr ? (*attr)->type : 1;
     if (type < 1 || type > 4) return orbis_error(EINVAL);
@@ -66,7 +67,19 @@ static ABI int32_t mutex_init(GuestMutex **out, GuestAttr **attr, const char *na
     if (!e) e = pthread_mutex_init(&mutex->native, &native_attr);
     pthread_mutexattr_destroy(&native_attr);
     if (e) { free(mutex); return orbis_error(e); }
+    if (name) snprintf(mutex->name, sizeof(mutex->name), "%s", name);
     *out = mutex; ++created; return 0;
+}
+/* Waits that block are noted for the thread report; the owner is the thread that got the lock last. */
+static int lock_noting(GuestMutex *m, const struct timespec *end, uintptr_t caller) {
+    int e = pthread_mutex_trylock(&m->native);
+    if (e == EBUSY) {
+        runtime_wait_begin("mutex", m->name, m, m->owner, caller);
+        e = end ? pthread_mutex_timedlock(&m->native, end) : pthread_mutex_lock(&m->native);
+        runtime_wait_end();
+    }
+    if (!e) m->owner = runtime_thread_self();
+    return e;
 }
 static pthread_mutex_t static_init = PTHREAD_MUTEX_INITIALIZER;
 /* Statically initialized handles (0/1) are created once, even under contention. */
@@ -88,7 +101,7 @@ static int32_t ensure_mutex(GuestMutex **mutex) {
 static ABI int32_t mutex_lock(GuestMutex **mutex) {
     int32_t e = ensure_mutex(mutex);
     if (e) return e;
-    e = orbis_error(pthread_mutex_lock(&(*mutex)->native));
+    e = orbis_error(lock_noting(*mutex, NULL, (uintptr_t)__builtin_return_address(0)));
     if (!e) ++locks;
     return e;
 }
@@ -96,13 +109,16 @@ static ABI int32_t mutex_trylock(GuestMutex **mutex) {
     int32_t e = ensure_mutex(mutex);
     if (e) return e;
     e = orbis_error(pthread_mutex_trylock(&(*mutex)->native));
-    if (!e) ++locks;
+    if (!e) { ++locks; (*mutex)->owner = runtime_thread_self(); }
     return e;
 }
 static ABI int32_t mutex_unlock(GuestMutex **mutex) {
     if (!mutex || (uintptr_t)*mutex == 2) return orbis_error(EINVAL);
     if ((uintptr_t)*mutex < 2) return orbis_error(EPERM);
+    void *owner = (*mutex)->owner;
+    (*mutex)->owner = NULL;
     int32_t e = orbis_error(pthread_mutex_unlock(&(*mutex)->native));
+    if (e) (*mutex)->owner = owner;
     if (!e) ++unlocks;
     return e;
 }
@@ -126,22 +142,34 @@ static ABI int32_t mutex_timedlock(GuestMutex **mutex, uint32_t usec) {
     if (e) return e;
     struct timespec end;
     if (deadline_after(&end, usec)) return orbis_error(EINVAL);
-    e = timed_error(pthread_mutex_timedlock(&(*mutex)->native, &end));
+    e = timed_error(lock_noting(*mutex, &end, (uintptr_t)__builtin_return_address(0)));
     if (!e) ++locks;
     return e;
 }
 /* Condition variables: opaque handles over host pthread_cond (CLOCK_REALTIME,
  * like FreeBSD's default), sharing the host mutex behind GuestMutex. */
-typedef struct { pthread_cond_t native; } GuestCond;
+typedef struct { pthread_cond_t native; char name[32]; } GuestCond;
 static size_t conds, waits, wakeups;
 static ABI int32_t cond_init(GuestCond **out, void **attr, const char *name) {
-    (void)attr; (void)name;
+    (void)attr;
     if (!out) return orbis_error(EINVAL);
-    GuestCond *c = malloc(sizeof(*c));
+    GuestCond *c = calloc(1, sizeof(*c));
     if (!c) return orbis_error(ENOMEM);
     int e = pthread_cond_init(&c->native, NULL);
     if (e) { free(c); return orbis_error(e); }
+    if (name) snprintf(c->name, sizeof(c->name), "%s", name);
     *out = c; ++conds; return 0;
+}
+/* The mutex is free while the thread waits; the report names the condition and that mutex. */
+static int cond_wait_noting(GuestCond *c, GuestMutex *m, const struct timespec *end, uintptr_t caller) {
+    char object[80];
+    snprintf(object, sizeof(object), "%s%s%s", c->name, m->name[0] ? " with mutex " : "", m->name);
+    runtime_wait_begin(end ? "condition (timed)" : "condition", object, c, NULL, caller);
+    m->owner = NULL;
+    const int e = end ? pthread_cond_timedwait(&c->native, &m->native, end) : pthread_cond_wait(&c->native, &m->native);
+    m->owner = runtime_thread_self();
+    runtime_wait_end();
+    return e;
 }
 static int32_t ensure_cond(GuestCond **cond) {
     if (!cond) return orbis_error(EINVAL);
@@ -168,19 +196,19 @@ static ABI int32_t cond_wait(GuestCond **cond, GuestMutex **mutex) {
     if (e) return e;
     if (!mutex || (uintptr_t)*mutex < 3) return orbis_error(EINVAL);
     ++waits;
-    return orbis_error(pthread_cond_wait(&(*cond)->native, &(*mutex)->native));
+    return orbis_error(cond_wait_noting(*cond, *mutex, NULL, (uintptr_t)__builtin_return_address(0)));
 }
-static int32_t cond_wait_until(GuestCond **cond, GuestMutex **mutex, const struct timespec *end) {
+static int32_t cond_wait_until(GuestCond **cond, GuestMutex **mutex, const struct timespec *end, uintptr_t caller) {
     int32_t e = ensure_cond(cond);
     if (e) return e;
     if (!mutex || (uintptr_t)*mutex < 3 || !end) return orbis_error(EINVAL);
     ++waits;
-    return timed_error(pthread_cond_timedwait(&(*cond)->native, &(*mutex)->native, end));
+    return timed_error(cond_wait_noting(*cond, *mutex, end, caller));
 }
 static ABI int32_t cond_timedwait(GuestCond **cond, GuestMutex **mutex, uint32_t usec) {
     struct timespec end;
     if (deadline_after(&end, usec)) return orbis_error(EINVAL);
-    return cond_wait_until(cond, mutex, &end);
+    return cond_wait_until(cond, mutex, &end, (uintptr_t)__builtin_return_address(0));
 }
 static ABI int32_t cond_signal(GuestCond **cond) {
     int32_t e = ensure_cond(cond);
@@ -197,7 +225,7 @@ typedef struct { int64_t sec, nsec; } GuestTimespec;
 static ABI int32_t cond_abs_timedwait(GuestCond **cond, GuestMutex **mutex, const GuestTimespec *abs) {
     if (!abs || abs->nsec < 0 || abs->nsec >= 1000000000) return orbis_error(EINVAL);
     struct timespec end = {.tv_sec = (time_t)abs->sec, .tv_nsec = (long)abs->nsec};
-    return cond_wait_until(cond, mutex, &end);
+    return cond_wait_until(cond, mutex, &end, (uintptr_t)__builtin_return_address(0));
 }
 /* POSIX pthread APIs return positive guest errno values, unlike scePthread. */
 static int32_t posix_result(int32_t result) { return result ? (int32_t)((uint32_t)result & 0xffff) : 0; }

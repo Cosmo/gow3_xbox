@@ -113,4 +113,10 @@ void runtime_savedata_report(void);
 int runtime_savedata_param(int32_t user, const char *dir, void *param);
 int runtime_savedata_icon(int32_t user, const char *dir, char *out, size_t size);
 void runtime_thread_attach_host(const char *name);
+/* Waits of guest threads (runtime_thread.c), listed by runtime_wait_report. */
+void *runtime_thread_self(void);
+void runtime_wait_begin(const char *kind,const char *object,const void *address,const void *holder,uintptr_t caller);
+void runtime_wait_end(void);
+void runtime_wait_report(void);
+void runtime_sample_threads(void); /* probe.c, UWP: stacks of the GPU threads for the report */
 #endif

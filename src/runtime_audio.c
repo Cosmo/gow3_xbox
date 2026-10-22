@@ -237,7 +237,11 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
         if (pace) {
             uint64_t now=now_ns();
             if (!p->next_deadline_ns || now>p->next_deadline_ns+8*period) p->next_deadline_ns=now; /* start or stall: restart cadence */
-            else sleep_until(p->next_deadline_ns);
+            else {
+                runtime_wait_begin("audio output","",p,NULL,0);
+                sleep_until(p->next_deadline_ns);
+                runtime_wait_end();
+            }
             p->next_deadline_ns+=period;
         }
         if (p->stream) {

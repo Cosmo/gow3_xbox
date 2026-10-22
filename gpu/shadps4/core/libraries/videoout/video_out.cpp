@@ -15,6 +15,12 @@
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 
+#ifdef GOW3_UWP
+extern "C" void runtime_wait_begin(const char* kind, const char* object, const void* address,
+                                   const void* holder, uintptr_t caller);
+extern "C" void runtime_wait_end(void);
+#endif
+
 namespace Libraries::VideoOut {
 
 static std::unique_ptr<VideoOutDriver> driver;
@@ -379,7 +385,15 @@ s32 PS4_SYSV_ABI sceVideoOutWaitVblank(s32 handle) {
 
     std::unique_lock lock{port->vo_mutex};
     const auto prev_counter = port->vblank_status.count;
+#ifdef GOW3_UWP
+    // spartanport: noted for the thread report (src/runtime_thread.c).
+    runtime_wait_begin("vblank", nullptr, port, nullptr,
+                       reinterpret_cast<uintptr_t>(__builtin_return_address(0)));
+#endif
     port->vblank_cv.wait(lock, [&]() { return prev_counter != port->vblank_status.count; });
+#ifdef GOW3_UWP
+    runtime_wait_end();
+#endif
     return ORBIS_OK;
 }
 
