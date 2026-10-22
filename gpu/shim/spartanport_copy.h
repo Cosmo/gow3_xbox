@@ -45,4 +45,15 @@ void AfterCopies(std::function<void()> callback);
 /// Times a thread yielded while waiting for copies (diagnostics, #209).
 unsigned long long Yields();
 
+/// True on a copy thread while it runs a task (and on any thread running copy work inline).
+bool InCopyThread();
+
+/// A copy thread that reads guest memory the GPU wrote must not wait for the GPU thread to read
+/// it back: that thread may be waiting for the copy (a deadlock). Such a task stops at the fault
+/// (page_manager.cpp) and stays pending until a GPU-side thread runs it again with RunDeferred(),
+/// where the fault is handled inline. WaitAsync() does so; `post` (set by the GPU command thread)
+/// asks that thread to call RunDeferred() without waiting for it.
+void SetDeferredPoster(void (*post)());
+void RunDeferred();
+
 } // namespace SpartanCopy

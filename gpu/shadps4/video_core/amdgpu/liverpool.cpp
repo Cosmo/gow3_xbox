@@ -213,6 +213,12 @@ void Liverpool::Process(std::stop_token stoken) {
 #if defined(__linux__) || defined(_WIN32)
     gpu_tid = gettid();
     g_liverpool = this;
+    // Copies stopped at a fault (GPU-written memory) run here as a command, handling it inline.
+    SpartanCopy::SetDeferredPoster([] {
+        if (g_liverpool) {
+            g_liverpool->SendCommand([] { SpartanCopy::RunDeferred(); });
+        }
+    });
 #endif
 
     while (!stoken.stop_requested()) {
