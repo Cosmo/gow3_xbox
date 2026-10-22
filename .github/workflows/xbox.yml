@@ -200,4 +200,8 @@ jobs:
           $title = "$env:TITLE".Trim()
           if (-not $title) { $title = "God of War 3 Launcher $env:VERSION" }
           Set-Content "$env:RUNNER_TEMP\notes.md" $notes -Encoding utf8NoBOM
-          gh release create "alpha-$env:VERSION" $env:ZIP --target $env:GITHUB_SHA --prerelease --title $title --notes-file "$env:RUNNER_TEMP\notes.md"
+          # The tag pads the time (the version's last part, HHMM) to four digits: GitHub orders release tags as
+          # text, and 819 would sort after 2341. The package version itself cannot have leading zeros.
+          $parts = "$env:VERSION".Split('.')
+          $parts[3] = $parts[3].PadLeft(4, '0')
+          gh release create "alpha-$($parts -join '.')" $env:ZIP --target $env:GITHUB_SHA --prerelease --title $title --notes-file "$env:RUNNER_TEMP\notes.md"
