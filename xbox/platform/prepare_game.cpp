@@ -880,18 +880,18 @@ Bytes compile_patches(const std::vector<Meta>& metas,const std::vector<std::stri
 std::string CheckTitle(const Bytes& data) {
     try {
         if(known_game(sfo(data))) return {};
-        return "is not God of War III Remastered.";
+        return "não é o God of War III Remastered.";
     } catch(const std::exception& error) {
-        return std::string("has an unreadable sce_sys\\param.sfo (")+error.what()+").";
+        return std::string("tem um sce_sys\\param.sfo ilegível (")+error.what()+").";
     }
 }
 
 Files Prepare(const Dump& dump,const std::string& patch_xml) {
     const auto values=sfo(dump.sfo);
-    if(!known_game(values)) fail("No graphics patch profile for the prepared game");
-    if(dump.eboot.empty()) fail("eboot.bin is empty (0 bytes): the game files are incomplete");
-    if(dump.libc.empty()) fail("libc.prx is empty (0 bytes): the game files are incomplete");
-    if(dump.fios.empty()) fail("libSceFios2.prx is empty (0 bytes): the game files are incomplete");
+    if(!known_game(values)) fail("Nenhum perfil de patch gráfico para o jogo preparado");
+    if(dump.eboot.empty()) fail("eboot.bin está vazio (0 bytes): os arquivos do jogo estão incompletos");
+    if(dump.libc.empty()) fail("libc.prx está vazio (0 bytes): os arquivos do jogo estão incompletos");
+    if(dump.fios.empty()) fail("libSceFios2.prx está vazio (0 bytes): os arquivos do jogo estão incompletos");
     Files files;
     const Self eboot=parse_self(dump.eboot);
     Probe probe=prepare_eboot(eboot,init_env_is_ret(dump.libc));

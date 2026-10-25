@@ -710,13 +710,13 @@ void Menu() {
     if (const int changes = RestartChanges()) {
 #ifdef GOW3_UWP
         // The app cannot restart itself; it reads these settings the next time it starts.
-        ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%d change%s take%s effect the next time you start the app.",
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%d change%s take%s effect the next time you start the app.",
                            changes, changes == 1 ? "" : "s", changes == 1 ? "s" : "");
     } else {
         ImGui::NewLine();
     }
 #else
-        ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%d change%s need%s a restart (unsaved progress is lost).",
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%d change%s need%s a restart (unsaved progress is lost).",
                            changes, changes == 1 ? "" : "s", changes == 1 ? "s" : "");
         ImGui::SameLine();
         ImGui::BeginDisabled(!std::getenv("SPARTAN_RESTART_COMMAND"));
@@ -805,7 +805,7 @@ void TextEntryBox() {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
-    ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%s", text_entry_prompt.c_str());
+    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s", text_entry_prompt.c_str());
     ImGui::Separator();
     ImGui::SetWindowFontScale(1.4f);
     ImGui::Text("%s_", text_entry_text.c_str());
@@ -828,7 +828,7 @@ void ChoiceBox() {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
-    ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%s", choice_title.c_str());
+    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s", choice_title.c_str());
     ImGui::Separator();
     // Save pictures are 228x128; rows without one keep the text aligned when others have one.
     const bool pictures = std::any_of(choice_textures.begin(), choice_textures.end(),
@@ -847,7 +847,7 @@ void ChoiceBox() {
             ImGui::SameLine();
         }
         if (selected) {
-            ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.55f, 1.0f), "> %s", choice_items[i].c_str());
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "> %s", choice_items[i].c_str());
         } else {
             ImGui::Text("  %s", choice_items[i].c_str());
         }
@@ -865,7 +865,7 @@ void ChoiceBox() {
         }
     }
     ImGui::Separator();
-    ImGui::TextDisabled("%s", PadText("Up/Down or D-pad: choose   Enter or Cross (A): OK   Esc or Circle (B): cancel", "Up/Down or D-pad: choose   Enter or A: OK   Esc or B: cancel", "Up/Down or D-pad: choose   Enter or B: OK   Esc or A: cancel"));
+    ImGui::TextDisabled("%s", PadText("Cima/Baixo ou D-pad: escolher   Enter ou Cross (A): OK   Esc ou Circle (B): cancelar", "Cima/Baixo ou D-pad: escolher   Enter ou A: OK   Esc ou B: cancelar", "Cima/Baixo ou D-pad: escolher   Enter ou B: OK   Esc ou A: cancelar"));
     ImGui::End();
 }
 
@@ -999,7 +999,7 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
     style.WindowRounding = 6.0f;
     style.FrameRounding = 4.0f;
     style.GrabRounding = 4.0f;
-    style.Colors[ImGuiCol_WindowBg].w = 0.92f;
+    style.Colors[ImGuiCol_WindowBg].w = 0.92f; style.Colors[ImGuiCol_Text] = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
 
     ImFontConfig font_config;
     font_config.FontDataOwnedByAtlas = false;
