@@ -1,3 +1,4 @@
+<img width="800" height="800" alt="430517-800-800" src="https://github.com/user-attachments/assets/6884e674-3cc7-4d54-8082-4fe501b88648" />
 # God of War 3 Launcher for Xbox
 
 God of War III Remastered on the **Xbox Series X|S in Developer Mode** (not the Xbox One). This
