@@ -11,7 +11,7 @@ SpartanPort's README.
 
 ## Install
 
-1. Download the zip from [Releases](https://github.com/Cosmo/gow3_xbox/releases) and unzip it on a PC.
+1. Download the zip from [Releases]([https://github.com/Marco2000XboxBrasil/gow3_xbox_PTBR/releases]) and unzip it on a PC.
 2. Device Portal → **Add** → the `.appx` and the package in `Dependencies`. If Dev Home lists the
    app as an App, set its type to **Game**.
 3. Copy your dump (the folder with `eboot.bin`, `sce_module`, `sce_sys` and `dvdroot_ps4`) to one of:
