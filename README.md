@@ -30,6 +30,16 @@ render resolution (720p by default), overlay, Automatic QTE, vibration and more.
 
 New versions install over earlier ones and keep your saves and settings.
 
+## Prints da Tela
+<img width="1053" height="762" alt="image" src="https://github.com/user-attachments/assets/0535cd6c-d407-4063-aa46-6d0c151c6f95" />
+<img width="1055" height="761" alt="image" src="https://github.com/user-attachments/assets/25cf9976-3690-43fa-bd7a-19d598bd9754" />
+<img width="1054" height="762" alt="image" src="https://github.com/user-attachments/assets/6f75bf70-6a6d-4e84-9b22-58c382f1906b" />
+<img width="1053" height="760" alt="image" src="https://github.com/user-attachments/assets/b723dc62-e0a6-469b-9c50-0d732b5c3008" />
+
+
+
+
+
 ## Known issues
 
 - **4K needs more memory than the Xbox allows.** In Developer Mode an app gets at most 5 GiB. At
