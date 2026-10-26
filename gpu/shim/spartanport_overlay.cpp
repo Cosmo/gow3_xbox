@@ -512,7 +512,7 @@ void PerformanceTab() {
 #ifdef GOW3_UWP
         // The resolutions the Xbox app prepares patches for; it reads the choice when it starts.
         static const char* const resolution_labels[] = {"720p · 1280 × 720", "900p · 1600 × 900",
-                                                        "1080p · 1920 × 1080 (native)", "4K · 3840 × 2160"};
+                                                        "1080p · 1920 × 1080 (nativa)", "4K · 3840 × 2160"};
         static const int resolution_values[] = {G::ParseResolution("720p"), G::ParseResolution("900p"),
                                                 G::ParseResolution("native"), G::ParseResolution("4K")};
         ChoiceRow("Resolução de renderização", s.render_resolution, resolution_labels, resolution_values, 4,
@@ -619,11 +619,11 @@ void OverlayTab() {
             }
         };
         add(s.cheats_supported.load() != 0, "cheats");
-        add(s.red_orbs_supported.load(), "orbes vermelhos");
-        add(s.orb_pickup_supported.load(), "coleta de orbes");
+        add(s.red_orbs_supported.load(), "orbes");
+        add(s.orb_pickup_supported.load(), "coleta");
         add(s.damage_supported.load(), "dano");
-        add(s.actor_watch_supported.load(), "vida dos inimigos");
-        add(s.qte_supported.load(), "comandos QTE");
+        add(s.actor_watch_supported.load(), "inimigos");
+        add(s.qte_supported.load(), "QTE");
         InfoRow("Extensões do jogo", hooks.empty() ? "nenhum" : hooks.c_str());
         ImGui::EndTable();
     }
@@ -710,8 +710,7 @@ void Menu() {
     if (const int changes = RestartChanges()) {
 #ifdef GOW3_UWP
         // The app cannot restart itself; it reads these settings the next time it starts.
-        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%d change%s take%s effect the next time you start the app.",
-                           changes, changes == 1 ? "" : "s", changes == 1 ? "s" : "");
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%d alteraç%s %s em vigor na próxima vez que você iniciar o app.", changes, changes == 1 ? "ão" : "ões", changes == 1 ? "entra" : "entram");
     } else {
         ImGui::NewLine();
     }

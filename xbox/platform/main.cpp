@@ -130,7 +130,7 @@ static bool dump_readable(std::string const& dump) {
 
 // Where a game folder is, in the player's words.
 static std::string describe_place(std::string const& dump) {
-    return _strnicmp(dump.c_str(),"D:\\DevelopmentFiles",19)==0 ? "internal storage" : "USB drive";
+    return _strnicmp(dump.c_str(),"D:\\DevelopmentFiles",19)==0 ? "armazenamento interno" : "pendrive";
 }
 
 // The chosen game folder (from the launcher's list or the picker) is kept in LocalState\game-folder.txt.
