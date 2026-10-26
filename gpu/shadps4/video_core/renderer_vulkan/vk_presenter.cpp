@@ -341,6 +341,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     SpartanOverlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
 
+    // spartanport: the launcher's "Start game without loading shaders" (StartOnDemand below).
+    [[maybe_unused]] bool on_demand = false;
 #ifdef GOW3_UWP
     if (const char* launcher=std::getenv("SPARTAN_UWP_LAUNCHER"); launcher && *launcher=='1') {
         std::string title="God of War III Remastered";
@@ -361,12 +363,19 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         const char* automatic=std::getenv("SPARTAN_PRECOMPILE_AUTORUN");
         bool compile_once=automatic&&*automatic=='1';
         for (;;) {
-            int action=1;
+            int action=2;
             if (!compile_once) {
                 action=choose(*folder_line ? title+"\n"+folder_line : title,
-                              {"Start game","Precompile shaders","Choose game folder"});
+                              {"Start game","Start game without loading shaders","Precompile shaders",
+                               "Choose game folder"});
                 if(action==0) break;
-                if(action==2) {
+                if(action==1) {
+                    // No warm-up: each pipeline is built when a draw first needs it (async shaders), and
+                    // saved to the cache as usual. Objects appear a moment late instead of a long wait.
+                    on_demand=true;
+                    break;
+                }
+                if(action==3) {
                     // Every dump the app finds by itself, then the picker. A different folder closes the app
                     // (xbox/platform/main.cpp); otherwise the menu shows why not.
                     std::vector<char> found(16384);
@@ -393,7 +402,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                     if(*message) title=message;
                     continue;
                 }
-                if(action!=1) continue;
+                if(action!=2) continue;
             }
             compile_once=false;
             try {
@@ -427,7 +436,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                               EmulatorSettings.IsPipelineCacheEnabled();
     const bool capture_only = EmulatorSettingsImpl::Flag("SPARTAN_PIPELINE_BINARY_ISOLATED", false) &&
                               EmulatorSettingsImpl::Flag("SPARTAN_PIPELINE_CAPTURE_ONLY", false);
-    if (UseOnDemandPipelines(binary_cache, instance.GetPipelineBinaryGlobalKey().keySize != 0,
+    if (on_demand ||
+        UseOnDemandPipelines(binary_cache, instance.GetPipelineBinaryGlobalKey().keySize != 0,
                             capture_only)) {
         rasterizer->GetPipelineCache().StartOnDemand();
         return;

@@ -24,6 +24,12 @@ SpartanPort's README.
 4. Start **God of War 3 Launcher**: **Prepare** (once), **Precompile shaders** (once, recommended),
    then **Start game**. The menu shows the game folder it uses; **Choose game folder** lists the
    dumps the app found (internal storage and USB) and can browse a USB drive.
+   - **Start game** first loads every shader the game has used so far ("Loading shader cache").
+     This takes longer the further you play (about 3 minutes with 7,000 shaders), but then
+     nothing has to be built during play.
+   - **Start game without loading shaders** starts at once and builds each shader the first time
+     the game needs it. After loading a save or entering a new area, some objects can appear a
+     moment late.
 
 In the game, **RS + LT** (click the right stick while holding the left trigger) opens the menu:
 render resolution (720p by default), overlay, Automatic QTE, vibration and more.
