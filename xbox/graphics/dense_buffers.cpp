@@ -58,6 +58,9 @@ const Buffer* BufferCache::GetDenseArena(u64 first_block,u64 last_block) {
     for(auto old:previous) {
         const vk::BufferCopy copy{0,old->cpu_addr-arena->cpu_addr,old->size_bytes};
         runtime.CopyBuffer(old,arena,std::span{&copy,1});
+        // Freed by ReleaseRetiredArenas: kept for the whole session, replaced arenas were about
+        // 460 MiB of GPU memory (system memory on the Xbox) after an hour in Olympia.
+        retired_arenas.emplace_back(old,0);
     }
     for(u64 page=first_page;page<=last_page;++page) {
         address_space[page]=arena;
@@ -67,6 +70,22 @@ const Buffer* BufferCache::GetDenseArena(u64 first_block,u64 last_block) {
     }
     std::printf("UWP dense GPU arena: %#llx, %llu MiB, %zu live DMA views\n",arena->cpu_addr,arena->size_bytes>>20,dense_slots.size());
     return arena;
+}
+void BufferCache::ReleaseRetiredArenas() {
+    // A draw resolves its buffers before recording them, possibly across a submission (a GPU wait
+    // while binding textures): only now is every use of a replaced arena recorded, by this tick.
+    std::erase_if(retired_arenas,[&](std::pair<const Buffer*,u64>& retired) {
+        if(!retired.second) {
+            retired.second=scheduler.CurrentTick();
+            return false;
+        }
+        if(!scheduler.IsFree(retired.second)) return false;
+        std::printf("UWP dense GPU arena: %#llx, %llu MiB freed (replaced)\n",
+                    static_cast<unsigned long long>(retired.first->cpu_addr),
+                    static_cast<unsigned long long>(retired.first->size_bytes>>20));
+        arenas.remove_if([&](const Buffer& candidate){ return &candidate==retired.first; });
+        return true;
+    });
 }
 void BufferCache::EnsureDenseResident(const Buffer* arena,u64 first_block,u64 last_block) {
     const u64 table_blocks=bda_pagetable_buffer->SizeBytes()/sizeof(u64);

@@ -1558,6 +1558,9 @@ void Rasterizer::OnSubmit() {
     }
     texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();
+#ifdef GOW3_UWP
+    buffer_cache.ReleaseRetiredArenas();
+#endif
     runtime.TickFrame();
 }
 
