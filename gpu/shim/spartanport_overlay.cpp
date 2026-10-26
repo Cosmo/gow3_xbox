@@ -320,21 +320,21 @@ std::string OverlayText() {
     return P::Format(sample, items, s.overlay_layout == 0);
 }
 
-constexpr const char* Unsupported = "Unavailable: game version or code signature mismatch.";
+constexpr const char* Unsupported = "Indisponível: a versão do jogo ou a assinatura do código não confere.";
 
 void GameTab() {
     auto& s = SpartanSettings::Get();
-    ImGui::SeparatorText("Cheats");
+    ImGui::SeparatorText("Trapaças");
     if (BeginRows("##cheats")) {
-        static const char* const names[] = {"Infinite health", "Infinite magic", "Infinite item meter",
-                                            "Infinite Rage of Sparta", "Max red orbs",
-                                            "Unlock Very Hard", "Infinite Double Jumps"};
+        static const char* const names[] = {"Vida infinita", "Magia infinita", "Medidor de itens infinito",
+                                            "Fúria de Esparta infinita", "Orbes vermelhos no máximo",
+                                            "Desbloquear Muito Difícil", "Saltos duplos infinitos"};
         static const char* const helps[] = {
-            "Health stays full. Only Kratos is protected. Turning it off does not undo past refills.",
-            "Magic stays full.", "The item meter (bow, Helios' head, boots) stays full.",
-            "Rage of Sparta stays full.", "Red orbs stay at the maximum.",
-            "Enable before opening New Game. Does not change an existing save difficulty.",
-            "Repeat air jumps without landing. Turn off for normal movement."};
+            "A vida fica cheia. Só Kratos é protegido. Desativar não desfaz recargas anteriores.",
+            "A magia fica cheia.", "O medidor de itens (arco, cabeça de Hélio, botas) fica cheio.",
+            "A Fúria de Esparta fica cheia.", "Os orbes vermelhos ficam no máximo.",
+            "Ative antes de abrir Novo Jogo. Não muda a dificuldade de um save existente.",
+            "Repete saltos no ar sem tocar o chão. Desative para o movimento normal."};
         for (unsigned cheat = 0; cheat < SPARTAN_CHEAT_COUNT; ++cheat) {
             const bool available = (s.cheats_supported.load() & (1u << cheat)) != 0;
             ImGui::BeginDisabled(!available);
@@ -342,64 +342,64 @@ void GameTab() {
             ImGui::EndDisabled();
         }
         ImGui::BeginDisabled(!s.qte_supported.load());
-        CheckRow("Automatic QTE", s.auto_qte,
-                 s.qte_supported.load() ? "Quick-time prompts answer themselves: single presses, repeated "
-                                          "presses, holds and stick rotations."
+        CheckRow("QTE automático", s.auto_qte,
+                 s.qte_supported.load() ? "Os comandos de quick-time se resolvem sozinhos: toques únicos, "
+                                          "toques repetidos, botões segurados e giros do analógico."
                                         : Unsupported);
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
 
-    ImGui::SeparatorText("Controller");
+    ImGui::SeparatorText("Controle");
     if (BeginRows("##controller")) {
-        SliderRow("Vibration", s.vibration, 0, 100, "%d%%",
-                  "Strength of the controller's vibration. 0% turns it off.");
+        SliderRow("Vibração", s.vibration, 0, 100, "%d%%",
+                  "Intensidade da vibração do controle. Em 0%, desliga.");
 #ifndef GOW3_UWP // the Xbox has no mouse
-        SliderRow("Mouse prompt distance", s.mouse_prompt_distance, 16, 200, "%d px",
-                  "With Joystick prompts on Adaptive mouse: how far the mouse moves for one step of a rotation.");
-        static const char* const aim_styles[] = {"Relative", "Absolute"};
-        ChoiceRow("Right stick style", s.mouse_aim_style, aim_styles, nullptr, 2,
-                  "L2 aim with the mouse (Head of Helios, Bow of Apollo). Relative: the stick follows the "
-                  "movement and goes back to neutral when the mouse stops. Absolute: the stick points from "
-                  "where the mouse was when L2 was pressed to where it is.");
-        SliderRow("Right stick sensitivity", s.mouse_aim_sensitivity, 10, 200, "%d%%",
-                  "L2 aim with the mouse: lower needs more mouse movement for the same stick, higher less.");
-        CheckRow("Keep mouse in window", s.mouse_lock,
-                 "While you play, the mouse stays in the game window; this menu and other windows get it back.");
+        SliderRow("Distância do comando do mouse", s.mouse_prompt_distance, 16, 200, "%d px",
+                  "Com os comandos de analógico no modo Mouse adaptativo: quanto o mouse se move para cada passo de uma rotação.");
+        static const char* const aim_styles[] = {"Relativo", "Absoluto"};
+        ChoiceRow("Estilo do analógico direito", s.mouse_aim_style, aim_styles, nullptr, 2,
+                  "Mira do L2 com o mouse (Cabeça de Hélio, Arco de Apolo). Relativo: o analógico acompanha o "
+                  "movimento e volta ao neutro quando o mouse para. Absoluto: o analógico aponta de "
+                  "onde o mouse estava quando o L2 foi pressionado até onde ele está.");
+        SliderRow("Sensibilidade do analógico direito", s.mouse_aim_sensitivity, 10, 200, "%d%%",
+                  "Mira do L2 com o mouse: menor exige mais movimento do mouse para o mesmo movimento do analógico, maior exige menos.");
+        CheckRow("Manter o mouse na janela", s.mouse_lock,
+                 "Enquanto você joga, o mouse fica na janela do jogo; este menu e outras janelas o recuperam.");
 #endif
         ImGui::EndTable();
     }
 
-    ImGui::SeparatorText("Multipliers");
-    if (ImGui::Button("Reset all to 1x")) {
+    ImGui::SeparatorText("Multiplicadores");
+    if (ImGui::Button("Redefinir tudo para 1x")) {
         for (auto* m : {&s.red_orb_multiplier, &s.green_orb_multiplier, &s.blue_orb_multiplier,
                         &s.gold_orb_multiplier, &s.damage_dealt, &s.damage_taken}) {
             *m = 1.0f;
         }
         dirty = true;
     }
-    Help("Every multiplier back to 1x (the game's normal values).");
+    Help("Todos os multiplicadores voltam a 1x (os valores normais do jogo).");
     if (BeginRows("##multipliers")) {
         const bool max_orbs = (s.cheats_supported.load() & (1u << 4)) && s.cheats[4].load();
         ImGui::BeginDisabled(!s.red_orbs_supported.load() || max_orbs);
-        MultiplierRow("Red orbs", s.red_orb_multiplier,
+        MultiplierRow("Orbes vermelhos", s.red_orb_multiplier,
                       !s.red_orbs_supported.load() ? Unsupported
-                      : max_orbs ? "Turn off Max red orbs to use the multiplier."
-                                 : "Red orbs gained. Orbs you have and prices stay the same.");
+                      : max_orbs ? "Desative Orbes vermelhos no máximo para usar o multiplicador."
+                                 : "Orbes vermelhos ganhos. Os orbes que você tem e os preços não mudam.");
         ImGui::EndDisabled();
         ImGui::BeginDisabled(!s.orb_pickup_supported.load());
         const char* pickup = s.orb_pickup_supported.load() ? nullptr : Unsupported;
-        MultiplierRow("Green orbs (health)", s.green_orb_multiplier,
-                      pickup ? pickup : "Health from each green orb. The bar stays within its maximum.");
-        MultiplierRow("Blue orbs (magic)", s.blue_orb_multiplier,
-                      pickup ? pickup : "Magic from each blue orb. The bar stays within its maximum.");
-        MultiplierRow("Gold orbs (Rage of Sparta)", s.gold_orb_multiplier,
-                      pickup ? pickup : "Rage of Sparta from each gold orb. The bar stays within its maximum.");
+        MultiplierRow("Orbes verdes (vida)", s.green_orb_multiplier,
+                      pickup ? pickup : "Vida de cada orbe verde. A barra fica dentro do máximo.");
+        MultiplierRow("Orbes azuis (magia)", s.blue_orb_multiplier,
+                      pickup ? pickup : "Magia de cada orbe azul. A barra fica dentro do máximo.");
+        MultiplierRow("Orbes dourados (Fúria de Esparta)", s.gold_orb_multiplier,
+                      pickup ? pickup : "Fúria de Esparta de cada orbe dourado. A barra fica dentro do máximo.");
         ImGui::EndDisabled();
         ImGui::BeginDisabled(!s.damage_supported.load());
         const char* damage = s.damage_supported.load() ? nullptr : Unsupported;
-        MultiplierRow("Damage dealt", s.damage_dealt, damage ? damage : "Damage Kratos does to enemies.");
-        MultiplierRow("Damage taken", s.damage_taken, damage ? damage : "Damage Kratos takes.");
+        MultiplierRow("Dano causado", s.damage_dealt, damage ? damage : "Dano que Kratos causa aos inimigos.");
+        MultiplierRow("Dano recebido", s.damage_taken, damage ? damage : "Dano que Kratos recebe.");
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
@@ -407,8 +407,8 @@ void GameTab() {
     ImGui::SeparatorText("HUD");
     if (BeginRows("##hud")) {
         ImGui::BeginDisabled(!s.actor_watch_supported.load());
-        CheckRow("Enemy health bar", s.enemy_health_bar,
-                 s.actor_watch_supported.load() ? "A thin bar at the top for the last enemy hit." : Unsupported);
+        CheckRow("Barra de vida do inimigo", s.enemy_health_bar,
+                 s.actor_watch_supported.load() ? "Uma barra fina no topo para o último inimigo atingido." : Unsupported);
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
@@ -418,50 +418,50 @@ void ImageTab() {
     namespace G = SpartanGraphics;
     auto& s = SpartanSettings::Get();
 #ifndef GOW3_UWP // the Xbox shows the game full screen in step with the TV, without sharpening
-    ImGui::SeparatorText("Display");
+    ImGui::SeparatorText("Tela");
     if (BeginRows("##display")) {
-        ChoiceRow("Display mode", s.display_mode, G::DisplayModeNames.data(), nullptr, G::DisplayModeCount,
-                  "Windowed, borderless window or exclusive fullscreen.");
-        CheckRow("VSync", s.vsync, "Waits for the monitor: no tearing, a little more input delay.");
+        ChoiceRow("Modo de exibição", s.display_mode, G::DisplayModeNames.data(), nullptr, G::DisplayModeCount,
+                  "Janela, janela sem bordas ou tela cheia exclusiva.");
+        CheckRow("VSync", s.vsync, "Espera o monitor: sem rasgos na imagem, um pouco mais de atraso nos comandos.");
         ImGui::EndTable();
     }
     const int iw = s.image_width, ih = s.image_height, ww = s.window_width, wh = s.window_height;
     const bool downscaling = iw > ww || ih > wh;
     const bool rcas_blocked = s.rcas && !s.rcas_applied;
-    ImGui::SeparatorText("Sharpening");
+    ImGui::SeparatorText("Nitidez");
     if (BeginRows("##scaling")) {
         ImGui::BeginDisabled(rcas_blocked);
-        CheckRow("Sharpening (RCAS)", s.rcas,
-                 rcas_blocked && downscaling ? "No effect: the game's image is larger than the window."
-                 : rcas_blocked              ? "No effect: the game's image is smaller than the window."
-                                             : "Sharpens the final image.");
+        CheckRow("Nitidez (RCAS)", s.rcas,
+                 rcas_blocked && downscaling ? "Sem efeito: a imagem do jogo é maior que a janela."
+                 : rcas_blocked              ? "Sem efeito: a imagem do jogo é menor que a janela."
+                                             : "Deixa a imagem final mais nítida.");
         ImGui::EndDisabled();
         ImGui::BeginDisabled(!s.rcas || rcas_blocked);
-        SliderRow("Sharpening strength", s.rcas_strength, 0, 100, "%d%%", "How strong the sharpening is.");
+        SliderRow("Intensidade da nitidez", s.rcas_strength, 0, 100, "%d%%", "Quão forte é a nitidez.");
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
 #endif
-    ImGui::SeparatorText(RestartSection("Textures").c_str());
+    ImGui::SeparatorText(RestartSection("Texturas").c_str());
     if (BeginRows("##textures")) {
-        static const char* const anisotropy_labels[] = {"Game default", "2x", "4x", "8x", "16x"};
-        ChoiceRow("Anisotropic filtering", s.anisotropy, anisotropy_labels, G::Anisotropies.data(),
+        static const char* const anisotropy_labels[] = {"Padrão do jogo", "2x", "4x", "8x", "16x"};
+        ChoiceRow("Filtragem anisotrópica", s.anisotropy, anisotropy_labels, G::Anisotropies.data(),
                   int(G::Anisotropies.size()),
-                  "Sharper floors and walls seen at an angle. Little cost on most GPUs.");
+                  "Chão e paredes vistos de lado ficam mais nítidos. Custo baixo na maioria das GPUs.");
         ImGui::EndTable();
     }
 #ifndef GOW3_UWP
-    ImGui::TextDisabled("F12 saves a screenshot to the user\\screenshots folder.");
+    ImGui::TextDisabled("F12 salva uma captura de tela na pasta user\\screenshots.");
 #endif
-    ImGui::SeparatorText("Information");
+    ImGui::SeparatorText("Informações");
     if (BeginRows("##image_info")) {
         char text[96];
         std::snprintf(text, sizeof(text), "%d x %d", int(s.image_width), int(s.image_height));
-        InfoRow("Game image", text);
+        InfoRow("Imagem do jogo", text);
 #ifndef GOW3_UWP
         std::snprintf(text, sizeof(text), "%d x %d", int(s.window_width), int(s.window_height));
-        InfoRow("Window", text);
-        InfoRow("Sharpening", s.rcas_applied ? "applied" : "not applied");
+        InfoRow("Janela", text);
+        InfoRow("Nitidez", s.rcas_applied ? "aplicada" : "não aplicada");
 #endif
         ImGui::EndTable();
     }
@@ -619,7 +619,7 @@ void OverlayTab() {
             }
         };
         add(s.cheats_supported.load() != 0, "cheats");
-        add(s.red_orbs_supported.load(), "orbes vermelhas");
+        add(s.red_orbs_supported.load(), "orbes vermelhos");
         add(s.orb_pickup_supported.load(), "coleta de orbes");
         add(s.damage_supported.load(), "dano");
         add(s.actor_watch_supported.load(), "vida dos inimigos");
