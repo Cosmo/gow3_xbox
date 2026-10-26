@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <atomic>
 #include <boost/container/small_vector.hpp>
 #include "spartanport_copy.h"
 #include "spartanport_toggles.h"
@@ -229,7 +231,39 @@ struct PageManager::Impl {
         release_pending();
     }
 
-    std::array<PageState, NUM_ADDRESS_PAGES> cached_pages{};
+    /// spartanport: the watcher counts, allocated per lock region (4 MiB of address space) on first
+    /// use. A flat array for the 40-bit address space was 512 MiB, all committed when the renderer
+    /// started: on the Xbox a tenth of the app's memory limit, mostly for addresses the game never
+    /// uses. Each chunk is created under its region's lock; the exchange only guards against misuse.
+    class PageStates {
+    public:
+        ~PageStates() {
+            for (auto& slot : chunks) {
+                delete[] slot.load(std::memory_order_relaxed);
+            }
+        }
+        PageState& operator[](size_t page) {
+            std::atomic<PageState*>& slot = chunks[page / PAGES_PER_LOCK];
+            PageState* chunk = slot.load(std::memory_order_acquire);
+            if (!chunk) [[unlikely]] {
+                chunk = Allocate(slot);
+            }
+            return chunk[page % PAGES_PER_LOCK];
+        }
+
+    private:
+        static PageState* Allocate(std::atomic<PageState*>& slot) {
+            PageState* fresh = new PageState[PAGES_PER_LOCK]{};
+            PageState* existing = nullptr;
+            if (slot.compare_exchange_strong(existing, fresh, std::memory_order_acq_rel)) {
+                return fresh;
+            }
+            delete[] fresh;
+            return existing;
+        }
+        std::array<std::atomic<PageState*>, NUM_ADDRESS_LOCKS> chunks{};
+    };
+    PageStates cached_pages;
 #ifdef PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP
     using LockType = Common::AdaptiveMutex;
 #else

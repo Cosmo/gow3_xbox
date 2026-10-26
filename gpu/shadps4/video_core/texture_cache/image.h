@@ -12,6 +12,7 @@
 
 #include <deque>
 #include <optional>
+#include <utility>
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
 
@@ -37,6 +38,30 @@ enum ImageFlagBits : u32 {
     Aliased = 1 << 8,     ///< spartanport: another image has the same guest address (alias_states)
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
+
+/// spartanport (UWP): set on a thread while the texture cache creates images there. When an image
+/// does not fit in the app's memory, UniqueImage::Create calls make_room for rounds 0, 1 and 2 and
+/// tries again after each that freed something. Images overlapping [keep_begin, keep_end) stay:
+/// the caller is working on them.
+struct ImageRoom {
+    bool (*make_room)(const ImageRoom& room, u32 round);
+    void* context;
+    VAddr keep_begin, keep_end;
+};
+inline thread_local const ImageRoom* image_room = nullptr;
+
+class ImageRoomScope {
+public:
+    explicit ImageRoomScope(const ImageRoom& room) : previous{std::exchange(image_room, &room)} {}
+    ~ImageRoomScope() {
+        image_room = previous;
+    }
+    ImageRoomScope(const ImageRoomScope&) = delete;
+    ImageRoomScope& operator=(const ImageRoomScope&) = delete;
+
+private:
+    const ImageRoom* previous;
+};
 
 struct UniqueImage {
     explicit UniqueImage() = default;

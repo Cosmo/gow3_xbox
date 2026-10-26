@@ -29,7 +29,12 @@
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
 
+#include <vk_mem_alloc.h>
+
 namespace Vulkan {
+
+/// spartanport: the renderer the memory report reads (gow3_gpu_memory, LocalState\memory.txt).
+static std::atomic<const Rasterizer*> g_report_rasterizer{nullptr};
 
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     // TODO(roamic): Add support for multiple viewports and geometry shaders when ViewportIndex
@@ -76,9 +81,43 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
         runtime.FlushBarriers();
         buffer_cache.SubmitPendingArenaBinds(info);
     });
+    g_report_rasterizer.store(this, std::memory_order_release);
 }
 
-Rasterizer::~Rasterizer() = default;
+Rasterizer::~Rasterizer() {
+    g_report_rasterizer.store(nullptr, std::memory_order_release);
+}
+
+void Rasterizer::MemoryReport(char* out, size_t size) const {
+    size_t used = std::snprintf(out, size, "%llu cached images (~%llu MiB by guest size)",
+                                static_cast<unsigned long long>(texture_cache.RegisteredImages()),
+                                static_cast<unsigned long long>(texture_cache.RegisteredImageBytes() >> 20));
+    const VkPhysicalDeviceMemoryProperties* properties{};
+    vmaGetMemoryProperties(instance.GetAllocator(), &properties);
+    VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+    vmaGetHeapBudgets(instance.GetAllocator(), budgets);
+    for (u32 heap = 0; heap < properties->memoryHeapCount && used < size; ++heap) {
+        const auto& budget = budgets[heap];
+        used += std::snprintf(out + used, size - used,
+                              "; heap %u%s: usage %llu, budget %llu, allocated %llu in blocks of %llu MiB",
+                              heap,
+                              (properties->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+                                  ? " (device)"
+                                  : "",
+                              static_cast<unsigned long long>(budget.usage >> 20),
+                              static_cast<unsigned long long>(budget.budget >> 20),
+                              static_cast<unsigned long long>(budget.statistics.allocationBytes >> 20),
+                              static_cast<unsigned long long>(budget.statistics.blockBytes >> 20));
+    }
+}
+
+extern "C" void gow3_gpu_memory(char* out, size_t size) {
+    if (const Rasterizer* rasterizer = g_report_rasterizer.load(std::memory_order_acquire)) {
+        rasterizer->MemoryReport(out, size);
+    } else {
+        std::snprintf(out, size, "no renderer");
+    }
+}
 
 inline const AmdGpu::Regs& Rasterizer::Regs() const {
     return stage_regs ? *stage_regs : liverpool->regs;

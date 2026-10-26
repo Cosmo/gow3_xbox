@@ -332,6 +332,24 @@ static int uwp_backing_write(uintptr_t address,const void *source,uint64_t size)
     ReleaseSRWLockExclusive(&uwp_commit_lock);
     return result;
 }
+/* The memory report (LocalState\memory.txt, main.cpp): game pages in bytes, out[0] committed private
+ * (out[1] of those pinned by game code), out[2] shared through a section, out[3] swap views, out[4]
+ * swapped out, out[5] reserved. */
+void runtime_memory_breakdown(uint64_t out[6]) {
+    read_lock(); AcquireSRWLockExclusive(&uwp_commit_lock);
+    memset(out,0,6*sizeof(*out));
+    for(size_t i=0;i<uwp_count;++i) {
+        const UwpPage *page=&uwp_pages[i];
+        out[5]+=PAGE;
+        if(!page->mapped) continue;
+        const UwpPhysical *physical=&uwp_physical[page->physical/PAGE];
+        if(page->kind==1 && page->committed) { out[0]+=PAGE; if(physical->pinned) out[1]+=PAGE; }
+        else if(page->kind==2) out[2]+=PAGE;
+        else if(page->kind==3) out[3]+=PAGE;
+        else if(page->kind==4) out[4]+=PAGE;
+    }
+    ReleaseSRWLockExclusive(&uwp_commit_lock); read_unlock();
+}
 static void uwp_memory_report(void) {
     uwp_swap_report();
     printf("UWP memory: commit faults=%" PRIu64 ", promoted alias pages=%" PRIu64 ", snapshots=%" PRIu64 ", restored=%" PRIu64 ", virtual pages=%zu\n",uwp_faults,uwp_aliases,uwp_snapshots,uwp_moves,uwp_count);

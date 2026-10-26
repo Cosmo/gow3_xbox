@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "spartanport_toggles.h"
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <ranges>
 #include "common/assert.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -21,6 +24,31 @@ extern "C" uint64_t runtime_memory_page_out(uint64_t bytes);
 namespace VideoCore {
 
 using namespace Vulkan;
+
+#ifdef GOW3_UWP
+namespace {
+/// SPARTAN_IMAGE_LIMIT_MB=N (tests): while the app uses more than N MiB, an image allocation fails
+/// as if memory were full, at most once every 2 s, so that the texture cache's eviction
+/// (UniqueImage::Create) can be tried on demand.
+bool SimulateOutOfMemory() {
+    static const u64 limit = [] {
+        const char* env = std::getenv("SPARTAN_IMAGE_LIMIT_MB");
+        return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
+    }();
+    static std::atomic<s64> next{0};
+    if (!limit || gow3_uwp_app_memory_usage() <= limit) {
+        return false;
+    }
+    const s64 now = std::chrono::steady_clock::now().time_since_epoch().count();
+    s64 due = next.load(std::memory_order_relaxed);
+    return now >= due &&
+           next.compare_exchange_strong(
+               due, now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                              std::chrono::seconds(2))
+                              .count());
+}
+} // namespace
+#endif
 
 Common::IncrementalIdProvider<u64> Image::global_image_uid{};
 
@@ -119,14 +147,45 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
     const VkImageCreateInfo image_ci_unsafe = static_cast<VkImageCreateInfo>(image_ci);
     VkImage unsafe_image{};
     VmaAllocationInfo alloc_info{};
-    VkResult result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image,
-                                     &allocation, &alloc_info);
+    [[maybe_unused]] bool simulated = false; // SimulateOutOfMemory()
+    const auto allocate = [&] {
+        VkResult created = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image,
+                                          &allocation, &alloc_info);
 #ifdef GOW3_UWP
-    for(unsigned attempt=0;result==VK_ERROR_OUT_OF_DEVICE_MEMORY && attempt<4;++attempt) {
+        if (created == VK_SUCCESS && image_room && (simulated || SimulateOutOfMemory())) {
+            vmaDestroyImage(allocator, unsafe_image, allocation);
+            unsafe_image = VK_NULL_HANDLE;
+            allocation = {};
+            created = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+            simulated = true;
+        }
+#endif
+        return created;
+    };
+    VkResult result = allocate();
+#ifdef GOW3_UWP
+    for(unsigned attempt=0;result==VK_ERROR_OUT_OF_DEVICE_MEMORY && !simulated && attempt<4;++attempt) {
         const auto released=runtime_memory_page_out(UINT64_C(64)<<20);
         if(!released) break;
         std::printf("UWP image allocation retry %u: swap released %llu MiB\n",attempt+1,released>>20);
-        result=vmaCreateImage(allocator,&image_ci_unsafe,&alloc_ci,&unsafe_image,&allocation,&alloc_info);
+        result=allocate();
+    }
+    // spartanport: then the texture cache evicts textures it can spare, waits for the GPU and frees
+    // them (ImageRoom). Not reentrant: an image created meanwhile has no second chance.
+    if (const ImageRoom* room = std::exchange(image_room, nullptr)) {
+        for (u32 round = 0; result == VK_ERROR_OUT_OF_DEVICE_MEMORY && round < 3; ++round) {
+            if (room->make_room(*room, round)) {
+                result = allocate();
+                if (result == VK_SUCCESS) {
+                    std::printf("UWP image allocation: fits after texture eviction round %u%s\n",
+                                round + 1, simulated ? " (simulated shortage)" : "");
+                }
+            }
+        }
+        if (simulated && result != VK_SUCCESS) {
+            result = allocate(); // a simulated shortage never stops the game
+        }
+        image_room = room;
     }
     if (result != VK_SUCCESS) {
         std::printf("UWP image allocation failed: %ux%ux%u layers=%u mips=%u samples=%u "
