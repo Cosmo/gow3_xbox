@@ -313,6 +313,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
       swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
+    // spartanport: it records only the swapchain image and the overlay (Scheduler::IgnoreGuestCopies).
+    present_scheduler.IgnoreGuestCopies();
 #ifdef GOW3_UWP
     const u32 num_images=std::max(3u,swapchain.GetImageCount());
 #else

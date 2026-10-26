@@ -823,6 +823,14 @@ public:
     /// submission that reads them. Waits for all.
     void WaitHostCopies();
 
+    /// spartanport: this scheduler's submissions read no guest memory copies (the present
+    /// thread's): they neither wait for the copy threads nor run their work. That thread is not a
+    /// GPU-side thread: a copy it ran could reach memory the GPU wrote and wait for the GPU
+    /// thread, which may be waiting for that copy (a freeze in combat).
+    void IgnoreGuestCopies() {
+        guest_copies = false;
+    }
+
     /// Runs `copy` on the recording thread in order with the commands (the thread spins for
     /// work anyway, so small copies cost no wakeup); WaitHostCopies() covers it.
     template <typename Func>
@@ -950,6 +958,7 @@ private:
     bool direct_mode = false; ///< the command buffer is recorded on the caller's thread
     u64 host_copies_issued = 0;
     std::atomic<u64> host_copies_done{0};
+    bool guest_copies = true; ///< false: IgnoreGuestCopies()
     std::atomic<u64> deferred_signals_issued{0}; ///< by the thread recording (A or B)
     std::shared_ptr<std::atomic<u64>> deferred_signals_done =
         std::make_shared<std::atomic<u64>>(0);

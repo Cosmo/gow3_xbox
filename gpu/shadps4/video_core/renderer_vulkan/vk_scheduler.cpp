@@ -260,6 +260,9 @@ void Scheduler::WaitHostCopies() {
             std::this_thread::yield();
         }
     }
+    if (!guest_copies) {
+        return;
+    }
     SpartanStats::WaitTimer timer{SpartanStats::copy_threads_wait_ns};
     SpartanCopy::WaitAsync();
 }
