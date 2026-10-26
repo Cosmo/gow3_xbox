@@ -39,6 +39,15 @@ New versions install over earlier ones and keep your saves and settings.
   example during the opening camera move on Gaia's back. It doesn't happen on every start; it
   seems to come with frame rate drops, and its cause isn't known yet.
 
+## Prints de Tela:
+<img width="1280" height="720" alt="Unknown-2026_10_26-00_33_01" src="https://github.com/user-attachments/assets/39d5451d-0835-4d89-8b3c-fc63e16a5987" />
+<img width="1280" height="720" alt="Unknown-2026_10_26-00_32_56" src="https://github.com/user-attachments/assets/86295cec-a4be-4ea5-9eb6-8662d4f5c43c" />
+<img width="1280" height="720" alt="Unknown-2026_10_26-00_32_53" src="https://github.com/user-attachments/assets/77ea9307-da50-4198-911b-5f41e8ecf6c8" />
+<img width="1280" height="720" alt="Unknown-2026_10_26-00_30_58" src="https://github.com/user-attachments/assets/2f592e1e-92e1-4544-88b0-672720af4edc" />
+<img width="1280" height="720" alt="Unknown-2026_10_26-00_30_49" src="https://github.com/user-attachments/assets/16fa62e6-f874-4719-89b9-bfcb5eb2de65" />
+<img width="1280" height="720" alt="Unknown-2026_10_26-00_33_03" src="https://github.com/user-attachments/assets/d921e66b-5dbd-43a8-92b8-f716f8f3b424" />
+
+
 ## Credits and license
 
 [xbox/CREDITS.md](xbox/CREDITS.md) lists everything this builds on. GPL-2.0, like SpartanPort.
