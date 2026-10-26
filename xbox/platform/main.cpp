@@ -520,6 +520,10 @@ static void loader() {
         std::printf("Game folder: %s (%s)\n",dump.c_str(),describe_place(dump).c_str());
     }
     _putenv_s("SPARTAN_PRECOMPILE_DUMP",dump.c_str());
+    { // Launcher background: Assets\fundo.rgba of the package (xbox/scripts/background.ps1); missing = black background.
+        const std::string background=winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path())+"\\Assets\\fundo.rgba";
+        _putenv_s("SPARTAN_LAUNCHER_BACKGROUND",background.c_str());
+    }
     std::string user=winrt::to_string(local)+"\\user";
     CreateDirectoryW((std::wstring(local)+L"\\user").c_str(),nullptr);
     CreateDirectoryW((std::wstring(local)+L"\\Prepared").c_str(),nullptr);

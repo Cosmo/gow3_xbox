@@ -345,6 +345,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         char folder_line[600]{};
         gow3_uwp_game_folder_line(folder_line,sizeof folder_line);
         const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP");
+        SpartanOverlay::SetBackground(true,std::getenv("SPARTAN_LAUNCHER_BACKGROUND"));
         const auto choose=[&](const std::string& heading,const std::vector<std::string>& items) {
             SpartanOverlay::BeginChoice(heading,items,{},0);
             int choice=-1;
@@ -363,7 +364,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
             if (!compile_once) {
                 action=choose(*folder_line ? title+"\n"+folder_line : title,
                               {"Iniciar jogo","Pré-compilar shaders","Escolher pasta do jogo"});
-                if(action==0) break;
+                if(action==0) { SpartanOverlay::SetBackground(false,nullptr); break; }
                 if(action==2) {
                     // Every dump the app finds by itself, then the picker. A different folder closes the app
                     // (xbox/platform/main.cpp); otherwise the menu shows why not.

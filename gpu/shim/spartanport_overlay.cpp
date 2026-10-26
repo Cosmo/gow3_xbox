@@ -23,6 +23,9 @@
 #include "spartanport_perf_stats.h"
 #include "../../src/actor_hook.h"
 
+#ifdef GOW3_UWP
+extern "C" std::FILE* gow3_uwp_fopen(const char* path, const char* mode); // xbox/platform/runtime_compat.c
+#endif
 extern SpartanActorSlot spartanport_actor_slots[2];
 extern "C" void runtime_restart(void); // src/probe.c: starts run.py again, ends this process
 #include "common/elf_info.h"
@@ -89,6 +92,10 @@ std::atomic<int> choice_result{-1}; // -1 open, -2 cancelled, else the chosen in
 // Save pictures: decoded by BeginChoice, made textures on the present thread (null = none).
 // Closed lists' textures wait in choice_retired until the backend has destroyed them.
 std::vector<SpartanPng::Image> choice_pictures;
+// Launcher background: read by SetBackground, made a texture on the present thread (null = none).
+SpartanPng::Image background_picture;
+ImTextureData* background_texture = nullptr;
+bool background_on = false;
 std::vector<ImTextureData*> choice_textures, choice_retired;
 std::atomic<bool> choice_retiring{false};
 float base_scale = 1.0f;
@@ -895,6 +902,19 @@ void LoadingScreen() {
     ImGui::End();
 }
 
+// Launcher: the picture behind the menu (SetBackground), drawn first so every window is above it.
+// `dim` darkens it for the loading screen, whose text has no panel behind it.
+void BackgroundImage(bool dim) {
+    if (!background_on || !background_texture) {
+        return;
+    }
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImU32 tint = dim ? IM_COL32(110, 110, 110, 255) : IM_COL32(255, 255, 255, 255);
+    ImGui::GetBackgroundDrawList()->AddImage(
+        background_texture->GetTexRef(), viewport->Pos,
+        ImVec2(viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y),
+        ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), tint);
+}
 void FpsCounter() {
     const auto& s = SpartanSettings::Get();
     const std::string text = OverlayText();
@@ -1088,6 +1108,14 @@ void RetireChoiceTextures() {
 
 // imgui_mutex held, before NewFrame: new pictures become textures, destroyed ones are freed.
 void UpdateChoiceTextures() {
+    if (!background_picture.rgba.empty() && !background_texture) {
+        ImTextureData* tex = IM_NEW(ImTextureData)();
+        tex->Create(ImTextureFormat_RGBA32, background_picture.width, background_picture.height);
+        std::memcpy(tex->GetPixels(), background_picture.rgba.data(), background_picture.rgba.size());
+        ImGui::RegisterUserTexture(tex);
+        background_texture = tex;
+        background_picture = SpartanPng::Image{};
+    }
     if (!choice_pictures.empty()) {
         choice_textures.assign(choice_pictures.size(), nullptr);
         for (size_t i = 0; i < choice_pictures.size(); ++i) {
@@ -1285,6 +1313,53 @@ void SetBackgroundLoading(u32 done, u32 total) {
     background_total = total;
 }
 
+void SetBackground(bool on, const char* path) {
+    {
+        std::scoped_lock lock{imgui_mutex};
+        if (!on) {
+            background_on = false;
+            return;
+        }
+        if (background_texture) {
+            background_on = true; // already loaded
+            return;
+        }
+    }
+    SpartanPng::Image picture;
+    if (path && *path) {
+#ifdef GOW3_UWP
+        std::FILE* file = gow3_uwp_fopen(path, "rb");
+#else
+        std::FILE* file = std::fopen(path, "rb");
+#endif
+        if (file) {
+            unsigned char header[8];
+            if (std::fread(header, 1, sizeof header, file) == sizeof header) {
+                const u32 width = u32(header[0]) | (u32(header[1]) << 8) | (u32(header[2]) << 16) | (u32(header[3]) << 24);
+                const u32 height = u32(header[4]) | (u32(header[5]) << 8) | (u32(header[6]) << 16) | (u32(header[7]) << 24);
+                if (width >= 1 && height >= 1 && width <= 4096 && height <= 4096) {
+                    picture.width = int(width);
+                    picture.height = int(height);
+                    picture.rgba.resize(size_t(width) * height * 4);
+                    if (std::fread(picture.rgba.data(), 1, picture.rgba.size(), file) != picture.rgba.size()) {
+                        picture = SpartanPng::Image{};
+                    } else {
+                        for (size_t i = 0; i + 3 < picture.rgba.size(); i += 4) {
+                            std::swap(picture.rgba[i], picture.rgba[i + 2]); // file is B,G,R,A
+                        }
+                    }
+                }
+            }
+            std::fclose(file);
+        }
+    }
+    if (picture.rgba.empty()) {
+        std::puts("Launcher background: file missing or invalid; keeping the black background");
+    }
+    std::scoped_lock lock{imgui_mutex};
+    background_picture = std::move(picture);
+    background_on = !background_picture.rgba.empty();
+}
 void SetLoading(bool active, u32 done, u32 total) {
     loading_done = done;
     loading_total = total;
@@ -1361,6 +1436,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     UpdateChoiceTextures();
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
+    BackgroundImage(loading);
 #ifdef GOW3_UWP
     Gow3Uwp::Overlay::Render(*overlay_instance);
 #endif

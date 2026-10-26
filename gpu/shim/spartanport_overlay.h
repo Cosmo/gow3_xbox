@@ -31,6 +31,10 @@ void UpdateTextInput(SDL_Window* window);
 /// Start-up loading screen (pipeline cache warm-up): `total` 0 shows no count.
 void SetLoading(bool active, u32 done, u32 total);
 void SetLoadingLabel(const std::string& label);
+/// Launcher: a full-screen picture behind the menu. `path` is Assets\fundo.rgba of the package
+/// (u32 width, u32 height, then B,G,R,A bytes; see xbox/scripts/background.ps1). A missing or bad
+/// file draws nothing. `on` false stops drawing it (the game starts).
+void SetBackground(bool on, const char* path);
 /// Background cache warm-up: a small corner note while the game runs; `total` 0 hides it.
 void SetBackgroundLoading(u32 done, u32 total);
 
