@@ -25,6 +25,13 @@ thread_local bool in_copy_thread = false;
 std::atomic<unsigned long long> yields{0};
 /// SetDeferredPoster: asks the GPU command thread to call RunDeferred().
 std::atomic<void (*)()> deferred_poster{nullptr};
+/// SetGpuSideCheck: whether the calling thread handles faults on GPU-written memory inline.
+std::atomic<bool (*)()> gpu_side_check{nullptr};
+
+bool OnGpuSide() {
+    const auto check = gpu_side_check.load(std::memory_order_acquire);
+    return !check || check();
+}
 
 /// Runs `work` under a recovery point: on a copy thread, a read of guest memory the GPU wrote jumps
 /// back here (page_manager.cpp declines the fault) instead of waiting for the GPU thread, which may
@@ -97,7 +104,10 @@ public:
     }
 
     void WaitAll() {
-        // The waiting thread helps instead of only spinning.
+        // The waiting thread helps instead of only spinning. Off the GPU side (a fault there
+        // would wait for the GPU thread, which may be waiting for this copy) it runs copies as a
+        // copy thread does and leaves the ones stopped at a fault alone.
+        const bool gpu_side = OnGpuSide();
         while (true) {
             Task task;
             {
@@ -106,7 +116,7 @@ public:
                     return;
                 }
                 // Tasks a copy thread stopped at a fault first: only a GPU-side thread finishes them.
-                if (!deferred.empty()) {
+                if (gpu_side && !deferred.empty()) {
                     task = std::move(deferred.front());
                     deferred.pop_front();
                 } else if (!async_tasks.empty()) {
@@ -115,7 +125,7 @@ public:
                 }
             }
             if (task.run) {
-                RunAsync(task);
+                RunAsync(task, !gpu_side);
             } else {
                 yields.fetch_add(1, std::memory_order_relaxed);
                 std::this_thread::yield();
@@ -341,6 +351,10 @@ void SetDeferredPoster(void (*post)()) {
 
 void RunDeferred() {
     GetPool().RunDeferred();
+}
+
+void SetGpuSideCheck(bool (*check)()) {
+    gpu_side_check.store(check, std::memory_order_release);
 }
 
 bool Enabled() {

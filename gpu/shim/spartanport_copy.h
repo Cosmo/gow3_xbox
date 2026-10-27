@@ -56,4 +56,9 @@ bool InCopyThread();
 void SetDeferredPoster(void (*post)());
 void RunDeferred();
 
+/// `check` (set by the GPU command thread) tells whether the calling thread is GPU-side, where
+/// faults on GPU-written memory are handled inline. WaitAsync() on any other thread runs copies
+/// under a recovery point, as a copy thread does, and leaves the stopped ones to GPU-side threads.
+void SetGpuSideCheck(bool (*check)());
+
 } // namespace SpartanCopy

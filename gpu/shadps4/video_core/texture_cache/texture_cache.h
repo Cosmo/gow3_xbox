@@ -254,6 +254,14 @@ public:
         return image;
     }
 
+    /// spartanport: registered images and their guest sizes (the memory report, LocalState\memory.txt).
+    u64 RegisteredImages() const {
+        return registered_images.load(std::memory_order_relaxed);
+    }
+    u64 RegisteredImageBytes() const {
+        return registered_image_bytes.load(std::memory_order_relaxed);
+    }
+
     /// Retrieves the image view with the specified id.
     [[nodiscard]] ImageView& GetImageView(ImageId id) {
         return slot_image_views[id];
@@ -439,6 +447,17 @@ private:
     void GarbageCollectImages();
     void GarbageCollectSamplers();
 
+    /// Evicts an image, written back first if the GPU wrote it and `write_back`. False when it
+    /// stays: GPU-written and tiled (no non-linear write-back yet), or GPU-written without
+    /// `write_back`.
+    bool EvictImage(ImageId image_id, bool write_back);
+
+    /// spartanport (UWP): a new image does not fit in the app's memory (UniqueImage::Create through
+    /// ImageRoom). Evicts textures unused for 16, 4 or 2 GC periods (by round) except those
+    /// overlapping the caller's range, waits for the GPU and frees them. Needs `mutex`. False
+    /// when nothing was freed.
+    bool MakeRoomForImage(const ImageRoom& room, u32 round);
+
 private:
     const Vulkan::Instance& instance;
     Vulkan::Scheduler& scheduler;
@@ -525,6 +544,7 @@ private:
     void RetireReadbacks();
     PageTable page_table;
     std::mutex mutex;
+    std::atomic<u64> registered_images{0}, registered_image_bytes{0};
     /// spartanport (#138): under `mutex`. GPU-modified images hold the written data themselves.
     void ApplyBackingWrites();
     std::mutex backing_writes_mutex;

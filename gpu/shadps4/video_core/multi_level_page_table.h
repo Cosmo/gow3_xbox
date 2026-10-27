@@ -68,7 +68,9 @@ public:
 
 private:
     std::vector<L1Page*> first_level_map{};
-    Common::ObjectPool<L1Page> page_alloc;
+    // spartanport: the pool's default chunk (1024 objects) is every second-level page at once
+    // (texture cache: 1024 x 88 KiB, all committed at startup); games use a few of them.
+    Common::ObjectPool<L1Page> page_alloc{8};
 };
 
 } // namespace VideoCore

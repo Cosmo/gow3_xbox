@@ -219,6 +219,9 @@ void Liverpool::Process(std::stop_token stoken) {
             g_liverpool->SendCommand([] { SpartanCopy::RunDeferred(); });
         }
     });
+    SpartanCopy::SetGpuSideCheck([] {
+        return g_liverpool && g_liverpool->rasterizer && g_liverpool->rasterizer->IsGpuSideThread();
+    });
 #endif
 
     while (!stoken.stop_requested()) {

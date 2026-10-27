@@ -6,6 +6,7 @@
 #include "spartanport_copy.h"
 
 #include <deque>
+#include <list>
 #include <boost/container/small_vector.hpp>
 
 #include "common/interval_set.h"
@@ -119,6 +120,12 @@ public:
     /// Synchronizes all buffers needed for DMA.
     void SynchronizeDmaBuffers();
 
+#ifdef GOW3_UWP
+    /// spartanport: frees the arenas a bigger one replaced (GetDenseArena) once the GPU is past
+    /// every command recorded before this call. Only where no draw is half bound (OnSubmit).
+    void ReleaseRetiredArenas();
+#endif
+
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
 
@@ -145,6 +152,8 @@ private:
     std::array<DenseView,DmaViewCount> dense_views{};
     std::unordered_map<u64,u32> dense_slots;
     std::unique_ptr<Buffer> null_buffer;
+    /// Replaced arenas and the tick after which the GPU no longer reads them (0: not known yet).
+    std::vector<std::pair<const Buffer*,u64>> retired_arenas;
 #endif
 
     void EnsureResident(const Buffer* arena, u64 first_block, u64 last_block);
@@ -190,7 +199,7 @@ private:
     u64 arena_page_bits{MAX_ARENA_PAGE_BITS};
     u64 arena_page_size{u64{1} << MAX_ARENA_PAGE_BITS};
     u64 num_arena_pages{u64{1} << (ADDRESS_SPACE_BITS - MAX_ARENA_PAGE_BITS)};
-    std::deque<Buffer> arenas;
+    std::list<Buffer> arenas; ///< spartanport: a list, so a replaced arena can be freed in place
     std::vector<ArenaBinds> pending_binds;
     Vulkan::Semaphore memory_semaphore;
 
