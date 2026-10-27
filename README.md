@@ -1,3 +1,8 @@
+> **Versão em português do Brasil** do launcher de God of War III para Xbox, feita a partir do trabalho de **Cosmo** ([Cosmo/gow3_xbox](https://github.com/Cosmo/gow3_xbox)), que por sua vez se baseia no port para PC **SpartanPort**, de Felipe Prado e colaboradores.
+>
+> O que esta versão muda: launcher e menu do jogo (RS + LT) em português do Brasil, textos do menu em verde e uma imagem de fundo opcional no launcher (a imagem não está neste repositório; veja `xbox/scripts/background.ps1`).
+>
+> **Nenhum arquivo do jogo está incluído**: é preciso um dump do seu próprio God of War III Remastered. Este projeto não é afiliado à Sony nem à Microsoft. Licença GPL-2.0, como o projeto original.
 # God of War 3 Launcher for Xbox
 
 God of War III Remastered on the **Xbox Series X|S in Developer Mode** (not the Xbox One). This
