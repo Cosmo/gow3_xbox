@@ -11,7 +11,7 @@ SpartanPort's README.
 
 ## Install
 
-1. Download the zip from [Releases](https://github.com/Cosmo/gow3_xbox/releases) and unzip it on a PC.
+1. Download the zip from [Releases](https://github.com/Marco2000XboxBrasil/gow3_xbox_PTBR/releases/tag/Xbox_UWP) and unzip it on a PC.
 2. Device Portal → **Add** → the `.appx` and the package in `Dependencies`. If Dev Home lists the
    app as an App, set its type to **Game**.
 3. Copy your dump (the folder with `eboot.bin`, `sce_module`, `sce_sys` and `dvdroot_ps4`) to one of:
@@ -44,6 +44,16 @@ New versions install over earlier ones and keep your saves and settings.
 - **Occasional ghosting.** Now and then moving parts of the picture leave strong trails, for
   example during the opening camera move on Gaia's back. It doesn't happen on every start; it
   seems to come with frame rate drops, and its cause isn't known yet.
+
+## Prints de Tela:
+
+<img width="1280" height="720" alt="Unknown-2026_10_26-22_58_02" src="https://github.com/user-attachments/assets/a44898aa-fb19-42fd-b1a2-e226a6bd3629" />
+<img width="1280" height="720" alt="Unknown-2026_10_26-00_33_03" src="https://github.com/user-attachments/assets/aaf9e21d-4c97-4839-8f16-69c9dcefafda" />
+<img width="1280" height="720" alt="Unknown-2026_10_26-23_08_05" src="https://github.com/user-attachments/assets/de6915df-b0d3-4b1c-91ea-7704e79a41bf" />
+<img width="1280" height="720" alt="Unknown-2026_10_27-00_30_05" src="https://github.com/user-attachments/assets/aed3da77-1404-49ef-ac4b-3a0f49b2e619" />
+<img width="1280" height="720" alt="Unknown-2026_10_27-00_20_14" src="https://github.com/user-attachments/assets/619fd95a-9386-4937-8808-77934bc9210f" />
+
+
 
 ## Credits and license
 
