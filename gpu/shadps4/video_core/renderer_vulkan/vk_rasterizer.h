@@ -131,6 +131,8 @@ public:
     }
     /// The GPU command thread or the draw recording thread (fault handling runs inline there).
     bool IsGpuSideThread() const;
+    /// spartanport: cached images and GPU heaps for the memory report (LocalState\memory.txt).
+    void MemoryReport(char* out, size_t size) const;
     bool IsGpuSideThreadId(u32 tid) const;
     /// A guest write hit a protected page.
     bool OnWriteFault(VAddr addr, bool assume_locks);

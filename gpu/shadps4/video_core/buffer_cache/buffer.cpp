@@ -182,6 +182,15 @@ Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes
         }
         is_coherent = property_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     }
+    // spartanport: large buffers by address, to match the memory report (LocalState\memory.txt).
+    if (size_bytes >= 32_MB) {
+        static constexpr const char* types[] = {"device local", "upload", "readback", "stream",
+                                                "sparse"};
+        std::printf("Buffer: %s, %llu MiB, CPU address %p%s%.*s\n", types[u32(mem_type)],
+                    static_cast<unsigned long long>(size_bytes >> 20),
+                    static_cast<void*>(mapped_data.data()), debug_name.empty() ? "" : ", ",
+                    static_cast<int>(debug_name.size()), debug_name.data());
+    }
 }
 
 void Buffer::Flush(u64 offset, u64 size) {

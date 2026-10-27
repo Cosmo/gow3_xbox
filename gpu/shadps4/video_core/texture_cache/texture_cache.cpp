@@ -1114,6 +1114,15 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         return cached.image_id;
     }
 
+    // spartanport: an image created here that does not fit evicts textures other than the ones
+    // this lookup works on (MakeRoomForImage; the mutex is held).
+    const ImageRoom room{[](const ImageRoom& self, u32 round) {
+                             return static_cast<TextureCache*>(self.context)
+                                 ->MakeRoomForImage(self, round);
+                         },
+                         this, info.guest_address, info.guest_address + info.guest_size};
+    const ImageRoomScope room_scope{room};
+
     ImageIds image_ids;
     ForEachImageInRegion(info.guest_address, info.guest_size,
                          [&](ImageId image_id, Image& image) { image_ids.push_back(image_id); });
@@ -1367,6 +1376,15 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
             info.guest_address = desc.info.stencil_addr;
             info.guest_size = desc.info.stencil_size;
             info.size = desc.info.size;
+            // spartanport: as in FindImage, but the mutex is not held here. The depth image was
+            // touched in this GC period (UpdateImage), so it stays.
+            const ImageRoom room{[](const ImageRoom& self, u32 round) {
+                                     auto& cache = *static_cast<TextureCache*>(self.context);
+                                     std::scoped_lock lock{cache.mutex};
+                                     return cache.MakeRoomForImage(self, round);
+                                 },
+                                 this, info.guest_address, info.guest_address + info.guest_size};
+            const ImageRoomScope room_scope{room};
             stencil_id = slot_images.insert(instance, runtime, slot_image_views, info);
             RegisterImage(stencil_id);
         }
@@ -1497,6 +1515,9 @@ void TextureCache::RegisterImage(ImageId image_id) {
     image.flags |= ImageFlagBits::Registered;
     ++registry_generation;
     total_used_memory += Common::AlignUp(image.info.guest_size, 1024);
+    registered_images.fetch_add(1, std::memory_order_relaxed);
+    registered_image_bytes.fetch_add(Common::AlignUp(image.info.guest_size, 1024),
+                                     std::memory_order_relaxed);
     image.lru_id = lru_cache.Insert(image_id, gc_tick);
     image.lru_touched_tick = gc_tick;
 
@@ -1533,6 +1554,9 @@ void TextureCache::UnregisterImage(ImageId image_id) {
     ++registry_generation;
     lru_cache.Free(image.lru_id);
     total_used_memory -= Common::AlignUp(image.info.guest_size, 1024);
+    registered_images.fetch_sub(1, std::memory_order_relaxed);
+    registered_image_bytes.fetch_sub(Common::AlignUp(image.info.guest_size, 1024),
+                                     std::memory_order_relaxed);
     ForEachPage(image.info.guest_address, image.info.guest_size, [this, image_id](u64 page) {
         const auto page_it = page_table.find(page);
         if (page_it == nullptr) {
@@ -1670,9 +1694,12 @@ void TextureCache::GarbageCollectImages() {
     }();
     const u64 app_budget = test_budget ? std::min(test_budget, gow3_uwp_app_memory_limit())
                                       : gow3_uwp_app_memory_limit();
-    trigger_gc_memory = app_budget > 768_MB ? app_budget - 768_MB : app_budget / 2;
-    pressure_gc_memory = app_budget > 512_MB ? app_budget - 512_MB : app_budget * 3 / 4;
-    critical_gc_memory = app_budget > 256_MB ? app_budget - 256_MB : app_budget * 7 / 8;
+    // The game's own memory and the driver's grow in bursts (area loads: +570 MiB within 5 s on
+    // the Series X), and a commit beyond the limit stops the game: the cache stays this far below.
+    // The marks were 512 MiB higher until the page manager stopped committing 512 MiB up front.
+    trigger_gc_memory = app_budget > 2560_MB ? app_budget - 1280_MB : app_budget / 2;
+    pressure_gc_memory = app_budget > 2560_MB ? app_budget - 1024_MB : app_budget * 3 / 5;
+    critical_gc_memory = app_budget > 2560_MB ? app_budget - 768_MB : app_budget * 7 / 10;
 #else
     if (instance.CanReportMemoryUsage()) {
         total_used_memory = instance.GetDeviceMemoryUsage();
@@ -1721,35 +1748,10 @@ void TextureCache::GarbageCollectImages() {
             return true;
         }
         --num_deletions;
-        auto& image = slot_images[image_id];
-        ResolveReadbacks(image.info.guest_address, image.info.guest_size, true,
-                         ReadbackSource::CacheCleanup);
-        const bool download = image.SafeToDownload();
-        const bool tiled = image.info.IsTiled();
-        if (tiled && download) {
-            // This is a workaround for now. We can't handle non-linear image downloads.
-#ifdef GOW3_UWP
-            // Keep protected images from exhausting every subsequent bounded scan.
-            lru_cache.Touch(image.lru_id, gc_tick);
-#endif
+        if (!EvictImage(image_id, pressured)) {
             return false;
         }
-        if (download && !pressured) {
-#ifdef GOW3_UWP
-            lru_cache.Touch(image.lru_id, gc_tick);
-#endif
-            return false;
-        }
-        if (download) {
-            // spartanport: synchronously, while the image still protects its pages. A deferred
-            // write-back landed after FreeImage had unprotected them, over whatever the game
-            // had meanwhile stored there (e.g. its heap after unloading an area).
-            DownloadImageMemory(image_id, true);
-            ++gc_downloads;
-        }
-        ++gc_evictions;
         evicted_images = true;
-        FreeImage(image_id);
         if (total_used_memory < critical_gc_memory) {
             if (aggresive) {
                 num_deletions >>= 2;
@@ -1798,6 +1800,75 @@ void TextureCache::GarbageCollectImages() {
         scheduler.Finish();
         scheduler.PopPendingOperations();
     }
+#endif
+}
+
+bool TextureCache::EvictImage(ImageId image_id, bool write_back) {
+    auto& image = slot_images[image_id];
+    ResolveReadbacks(image.info.guest_address, image.info.guest_size, true,
+                     ReadbackSource::CacheCleanup);
+    const bool download = image.SafeToDownload();
+    // Tiled: a workaround for now, non-linear image downloads are not handled.
+    if (download && (image.info.IsTiled() || !write_back)) {
+#ifdef GOW3_UWP
+        // Keep protected images from exhausting every subsequent bounded scan.
+        lru_cache.Touch(image.lru_id, gc_tick);
+#endif
+        return false;
+    }
+    if (download) {
+        // spartanport: synchronously, while the image still protects its pages. A deferred
+        // write-back landed after FreeImage had unprotected them, over whatever the game
+        // had meanwhile stored there (e.g. its heap after unloading an area).
+        DownloadImageMemory(image_id, true);
+        ++gc_downloads;
+    }
+    ++gc_evictions;
+    FreeImage(image_id);
+    return true;
+}
+
+bool TextureCache::MakeRoomForImage(const ImageRoom& room, u32 round) {
+#ifdef GOW3_UWP
+    // The images of the current GC period (the draw being prepared) stay in every round.
+    static constexpr u64 unused_periods[] = {16, 4, 2};
+    if (round >= std::size(unused_periods)) {
+        return false;
+    }
+    const u64 before = gow3_uwp_app_memory_usage();
+    const u64 limit = gow3_uwp_app_memory_limit();
+    const u64 target = critical_gc_memory ? critical_gc_memory : limit * 7 / 10;
+    const u64 periods = std::min(unused_periods[round], gc_tick);
+    const u64 evictions = gc_evictions, downloads = gc_downloads;
+    total_used_memory = before;
+    u64 freed = 0;
+    lru_cache.ForEachItemBelow(gc_tick - periods, [&](ImageId image_id) {
+        if (freed >= 64_MB && total_used_memory < target) {
+            return true;
+        }
+        const auto& info = slot_images[image_id].info;
+        if (info.guest_address < room.keep_end &&
+            room.keep_begin < info.guest_address + info.guest_size) {
+            return false;
+        }
+        const u64 size = Common::AlignUp(info.guest_size, 1024);
+        if (EvictImage(image_id, true)) {
+            freed += size;
+        }
+        return false;
+    });
+    // Deletion is fence deferred: submit, wait for the GPU and free them now.
+    scheduler.Finish();
+    scheduler.PopPendingOperations();
+    const u64 after = gow3_uwp_app_memory_usage();
+    std::printf("Texture cache: no room for a new image, round %u: evicted %llu textures unused for "
+                "%llu periods (%llu written back); app %llu -> %llu MiB\n",
+                round + 1, (unsigned long long)(gc_evictions - evictions),
+                (unsigned long long)periods, (unsigned long long)(gc_downloads - downloads),
+                (unsigned long long)(before >> 20), (unsigned long long)(after >> 20));
+    return gc_evictions != evictions || after < before;
+#else
+    return false;
 #endif
 }
 

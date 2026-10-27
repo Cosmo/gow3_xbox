@@ -10,6 +10,7 @@
 #include <winrt/Windows.Gaming.Input.h>
 #include <winrt/Windows.UI.Popups.h>
 #include <windows.h>
+#include <psapi.h>
 #include <unknwn.h>
 #include <gamingdeviceinformation.h>
 #include <fileapifromapp.h>
@@ -39,10 +40,68 @@ static uint64_t memory_limit_override=0;
 extern "C" void runtime_memory_start_paging();
 extern "C" void runtime_wait_report(void);
 extern "C" void runtime_sample_threads(void);
+extern "C" void runtime_memory_breakdown(uint64_t out[6]);
 #ifdef GOW3_LINK_RENDERER
 extern "C" void gow3_gpu_state(char *out,size_t size);
 extern "C" void gow3_gpu_history(char *out,size_t size);
+extern "C" void gow3_gpu_memory(char *out,size_t size);
 #endif
+// LocalState\memory.txt asks for this report in loader.log: what the app's memory (the Xbox counts it against
+// the app limit) is made of.
+static void memory_report() {
+    PROCESS_MEMORY_COUNTERS_EX counters{};
+    counters.cb=sizeof counters;
+    GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&counters),sizeof counters);
+    uint64_t image=0,mapped=0,private_bytes=0;
+    // Committed memory per allocation (its regions are adjacent), for the largest ones below.
+    struct Allocation { uintptr_t base; uint64_t committed; DWORD type,protect; };
+    std::vector<Allocation> allocations;
+    MEMORY_BASIC_INFORMATION info;
+    for(uintptr_t at=0;VirtualQuery(reinterpret_cast<void *>(at),&info,sizeof info);) {
+        const uintptr_t next=reinterpret_cast<uintptr_t>(info.BaseAddress)+info.RegionSize;
+        if(info.State==MEM_COMMIT) {
+            (info.Type==MEM_IMAGE ? image : info.Type==MEM_MAPPED ? mapped : private_bytes)+=info.RegionSize;
+            const uintptr_t base=reinterpret_cast<uintptr_t>(info.AllocationBase);
+            if(info.Type!=MEM_IMAGE) {
+                if(!allocations.empty() && allocations.back().base==base) allocations.back().committed+=info.RegionSize;
+                else allocations.push_back({base,info.RegionSize,info.Type,info.Protect});
+            }
+        }
+        if(next<=at) break;
+        at=next;
+    }
+    std::sort(allocations.begin(),allocations.end(),[](const Allocation& a,const Allocation& b) { return a.committed>b.committed; });
+    allocations.resize(std::min<size_t>(allocations.size(),12));
+    uint64_t game[6]{};
+    runtime_memory_breakdown(game);
+    const uint64_t other=private_bytes>game[0] ? private_bytes-game[0] : 0;
+    std::printf("Memory report: app %llu of %llu MiB; private commit %llu MiB, working set %llu MiB\n",
+        winrt::Windows::System::MemoryManager::AppMemoryUsage()>>20,
+        winrt::Windows::System::MemoryManager::AppMemoryUsageLimit()>>20,
+        static_cast<unsigned long long>(counters.PrivateUsage>>20),static_cast<unsigned long long>(counters.WorkingSetSize>>20));
+    std::printf("Memory: committed address space: exe and DLLs %llu MiB, mapped sections %llu MiB, private %llu MiB\n",
+        image>>20,mapped>>20,private_bytes>>20);
+    std::printf("Memory: game pages %llu MiB committed (%llu MiB pinned), %llu MiB shared, %llu MiB swap views, %llu MiB swapped out, %llu MiB reserved\n",
+        game[0]>>20,game[1]>>20,game[2]>>20,game[3]>>20,game[4]>>20,game[5]>>20);
+    std::printf("Memory: private memory outside the game pages (heaps, graphics driver) %llu MiB\n",other>>20);
+    // Touched pages, sampled every 64 KiB: committed but untouched memory still counts on the Xbox.
+    for(const Allocation& allocation:allocations) {
+        std::vector<PSAPI_WORKING_SET_EX_INFORMATION> samples(static_cast<size_t>((allocation.committed+65535)>>16));
+        for(size_t i=0;i<samples.size();++i) samples[i].VirtualAddress=reinterpret_cast<void *>(allocation.base+(i<<16));
+        uint64_t resident=0;
+        if(QueryWorkingSetEx(GetCurrentProcess(),samples.data(),static_cast<DWORD>(samples.size()*sizeof(samples[0]))))
+            for(const auto& sample:samples) if(sample.VirtualAttributes.Valid) resident+=65536;
+        std::printf("Memory: allocation at %p: %llu MiB committed, ~%llu MiB touched, %s, protection %#lx\n",
+            reinterpret_cast<void *>(allocation.base),allocation.committed>>20,resident>>20,
+            allocation.type==MEM_MAPPED ? "mapped" : "private",allocation.protect);
+    }
+#ifdef GOW3_LINK_RENDERER
+    char gpu[1024]{};
+    gow3_gpu_memory(gpu,sizeof gpu);
+    std::printf("GPU memory: %s\n",gpu);
+#endif
+    std::fflush(stdout);
+}
 extern "C" void gow3_uwp_pager_thread_init() {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 }
@@ -497,7 +556,7 @@ static void loader() {
            key=="SPARTAN_PIPELINE_BINARIES"||key=="SPARTAN_FRAMES_AHEAD"||key=="SPARTAN_STREAM_MEMORY"||
            key=="SPARTAN_RECORDER_TIMINGS"||key=="SPARTAN_BAKED_PIPELINES"||
            key=="SPARTAN_PERF_DIAG"||key=="SPARTAN_PREP_WORKERS"||key=="SPARTAN_COPY_THREADS"||key=="SPARTAN_CHOOSE_DUMP"||
-           key=="SPARTAN_READ_FAULT_EVERY") {
+           key=="SPARTAN_READ_FAULT_EVERY"||key=="SPARTAN_IMAGE_LIMIT_MB") {
             _putenv_s(key.c_str(),value.c_str());
             SetEnvironmentVariableW(winrt::to_hstring(key).c_str(),winrt::to_hstring(value).c_str());
         }
@@ -752,10 +811,18 @@ struct View : winrt::implements<View,winrt::Windows::ApplicationModel::Core::IFr
             }
         }).detach();
         // LocalState\threads.txt asks for the thread report in loader.log: what every game thread waits for (a hang).
-        std::thread([request=std::wstring(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())+L"\\threads.txt"] {
+        // LocalState\memory.txt asks for the memory report (memory_report).
+        std::thread([request=std::wstring(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())+L"\\threads.txt",
+                     memory=std::wstring(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())+L"\\memory.txt"] {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
             WIN32_FILE_ATTRIBUTE_DATA attributes{};
             DeleteFileFromAppW(request.c_str());
+            DeleteFileFromAppW(memory.c_str());
             for(;;) {
+                if(GetFileAttributesExFromAppW(memory.c_str(),GetFileExInfoStandard,&attributes)) {
+                    DeleteFileFromAppW(memory.c_str());
+                    memory_report();
+                }
                 if(GetFileAttributesExFromAppW(request.c_str(),GetFileExInfoStandard,&attributes)) {
                     DeleteFileFromAppW(request.c_str());
                     runtime_wait_report();

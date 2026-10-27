@@ -6,11 +6,17 @@
 #include <cstdio>
 
 namespace VideoCore {
+// The logical DMA page table (one 8-byte entry per 64 KiB, read by shaders through a bounds-checked
+// storage buffer) covers the first 128 GiB, not the 40-bit space: the full table was 128 MiB of GPU
+// memory, which the Xbox counts against the app limit. The runtime places game memory upward from
+// 64 GiB (find_free); God of War III's highest GPU-visible address was 69.4 GiB. A read beyond the
+// table returns 0 (not resident); EnsureDenseResident reports a block beyond it once.
+static constexpr u64 DmaTableBits=37;
 void BufferCache::InitializeDenseBuffers() {
     block_shift=16;block_size=1u<<block_shift;
     blocks_per_arena_page=arena_page_size/block_size;
     blocks_per_arena_page_shift=arena_page_bits-block_shift;
-    const u64 pages=u64{1}<<(ADDRESS_SPACE_BITS-block_shift);
+    const u64 pages=u64{1}<<(DmaTableBits-block_shift);
     fault_manager=std::make_unique<FaultManager>(instance,scheduler,*this,block_shift,pages);
     bda_pagetable_buffer=std::make_unique<Buffer>(instance,0,pages*sizeof(u64),MemoryType::DeviceLocal,"Logical DMA Page Table");
     runtime.FillBuffer(bda_pagetable_buffer.get(),0,pages*sizeof(u64),0);
@@ -52,6 +58,9 @@ const Buffer* BufferCache::GetDenseArena(u64 first_block,u64 last_block) {
     for(auto old:previous) {
         const vk::BufferCopy copy{0,old->cpu_addr-arena->cpu_addr,old->size_bytes};
         runtime.CopyBuffer(old,arena,std::span{&copy,1});
+        // Freed by ReleaseRetiredArenas: kept for the whole session, replaced arenas were about
+        // 460 MiB of GPU memory (system memory on the Xbox) after an hour in Olympia.
+        retired_arenas.emplace_back(old,0);
     }
     for(u64 page=first_page;page<=last_page;++page) {
         address_space[page]=arena;
@@ -62,7 +71,35 @@ const Buffer* BufferCache::GetDenseArena(u64 first_block,u64 last_block) {
     std::printf("UWP dense GPU arena: %#llx, %llu MiB, %zu live DMA views\n",arena->cpu_addr,arena->size_bytes>>20,dense_slots.size());
     return arena;
 }
+void BufferCache::ReleaseRetiredArenas() {
+    // A draw resolves its buffers before recording them, possibly across a submission (a GPU wait
+    // while binding textures): only now is every use of a replaced arena recorded, by this tick.
+    std::erase_if(retired_arenas,[&](std::pair<const Buffer*,u64>& retired) {
+        if(!retired.second) {
+            retired.second=scheduler.CurrentTick();
+            return false;
+        }
+        if(!scheduler.IsFree(retired.second)) return false;
+        std::printf("UWP dense GPU arena: %#llx, %llu MiB freed (replaced)\n",
+                    static_cast<unsigned long long>(retired.first->cpu_addr),
+                    static_cast<unsigned long long>(retired.first->size_bytes>>20));
+        arenas.remove_if([&](const Buffer& candidate){ return &candidate==retired.first; });
+        return true;
+    });
+}
 void BufferCache::EnsureDenseResident(const Buffer* arena,u64 first_block,u64 last_block) {
+    const u64 table_blocks=bda_pagetable_buffer->SizeBytes()/sizeof(u64);
+    if(last_block>=table_blocks) {
+        static bool reported=false;
+        if(!reported) {
+            reported=true;
+            std::printf("UWP buffer cache: GPU data at %#llx is beyond the logical DMA table (%llu GiB); shaders read it as zero\n",
+                        static_cast<unsigned long long>(last_block<<block_shift),
+                        static_cast<unsigned long long>((table_blocks<<block_shift)>>30));
+        }
+        if(first_block>=table_blocks) return;
+        last_block=table_blocks-1;
+    }
     IntervalList gaps;
     resident_ranges.ForEachGap(first_block,last_block+1,[&](u64 first,u64 end){gaps.Add({first,end});});
     for(auto const& range:gaps) {
