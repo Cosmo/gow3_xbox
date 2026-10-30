@@ -349,6 +349,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         char folder_line[600]{};
         gow3_uwp_game_folder_line(folder_line,sizeof folder_line);
         const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP");
+        SpartanOverlay::SetBackground(true,std::getenv("SPARTAN_LAUNCHER_BACKGROUND"));
         const auto choose=[&](const std::string& heading,const std::vector<std::string>& items) {
             SpartanOverlay::BeginChoice(heading,items,{},0);
             int choice=-1;
@@ -366,13 +367,14 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
             int action=2;
             if (!compile_once) {
                 action=choose(*folder_line ? title+"\n"+folder_line : title,
-                              {"Start game","Start game without loading shaders","Precompile shaders",
-                               "Choose game folder"});
-                if(action==0) break;
+                              {"Iniciar jogo","Iniciar jogo sem carregar shaders","Pré-compilar shaders",
+                               "Escolher pasta do jogo"});
+                if(action==0) { SpartanOverlay::SetBackground(false,nullptr); break; }
                 if(action==1) {
                     // No warm-up: each pipeline is built when a draw first needs it (async shaders), and
                     // saved to the cache as usual. Objects appear a moment late instead of a long wait.
                     on_demand=true;
+                    SpartanOverlay::SetBackground(false,nullptr);
                     break;
                 }
                 if(action==3) {
@@ -387,13 +389,13 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                         if(tab==std::string::npos) continue;
                         paths.push_back(line.substr(0,tab));
                         const bool now=current&&_stricmp(paths.back().c_str(),current)==0;
-                        items.push_back(paths.back()+" ("+line.substr(tab+1)+(now ? ", current" : "")+")");
+                        items.push_back(paths.back()+" ("+line.substr(tab+1)+(now ? ", atual" : "")+")");
                     }
-                    items.push_back("Browse USB drive...");
-                    items.push_back("Back");
-                    const int picked=choose("Choose the game folder\n"
-                        "Internal storage: put the dump anywhere under D:\\DevelopmentFiles.\n"
-                        "USB drive: any folder; choose it with Browse USB drive.",items);
+                    items.push_back("Procurar no pendrive...");
+                    items.push_back("Voltar");
+                    const int picked=choose("Escolha a pasta do jogo\n"
+                        "Armazenamento interno: coloque o dump em qualquer lugar dentro de D:\\DevelopmentFiles.\n"
+                        "Pendrive: qualquer pasta; escolha-a em Procurar no pendrive.",items);
                     char message[512]{};
                     if(picked>=0&&picked<int(paths.size()))
                         gow3_uwp_use_game_folder(paths[picked].c_str(),message,sizeof message);
@@ -407,23 +409,23 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
             compile_once=false;
             try {
                 const char* dump=std::getenv("SPARTAN_PRECOMPILE_DUMP");
-                if(!dump||!*dump) throw std::runtime_error("Game folder is not configured");
+                if(!dump||!*dump) throw std::runtime_error("A pasta do jogo não está configurada");
                 auto last=std::chrono::steady_clock::time_point{};
                 const auto result=Gow3Precompile::Prepare(dump,Gow3Precompile::CacheDirectory(),
                     rasterizer->GetPipelineCache().GetProfile(),[&](const auto& progress) {
                         const auto now=std::chrono::steady_clock::now();
                         if(now-last<std::chrono::milliseconds(100)&&progress.done!=progress.total) return;
                         last=now;
-                        SpartanOverlay::SetLoadingLabel(progress.scanning ? "Scanning game files..." :
-                            progress.vertex ? "Precompiling vertex shaders..." : "Precompiling fragment shaders...");
+                        SpartanOverlay::SetLoadingLabel(progress.scanning ? "Verificando os arquivos do jogo..." :
+                            progress.vertex ? "Pré-compilando shaders de vértice..." : "Pré-compilando shaders de fragmento...");
                         SpartanOverlay::SetLoading(true,progress.done,progress.total);
                         PresentLoadingFrame();
                     });
-                title=fmt::format("{} shader entries prepared. Others compile during gameplay.{}",
-                    result.prepared_entries,result.failed ? " Some variants could not be prepared." : "");
+                title=fmt::format("{} shaders preparados. Os demais compilam durante o jogo.{}",
+                    result.prepared_entries,result.failed ? " Algumas variantes não puderam ser preparadas." : "");
                 std::printf("Launcher precompile: %u entries, %u variants ready\n",result.prepared_entries,result.compiled+result.already_cached);
             } catch(const std::exception& error) {
-                title=std::string("Precompilation could not finish: ")+error.what();
+                title=std::string("A pré-compilação não pôde terminar: ")+error.what();
                 std::printf("Launcher precompile failed: %s\n",error.what());
             }
             SpartanOverlay::SetLoading(false,0,0);

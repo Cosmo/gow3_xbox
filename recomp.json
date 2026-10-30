@@ -1,0 +1,17 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "gow3_xbox_PTBR",
+  "wikidata": "Q3142278",
+  "system": "Xbox Séries",
+  "type": "recomp",
+  "original": { "region": "BRA", "revision": "alpha-1.0.26295.0707" },
+  "project": "God of War 3 Remaster Port",
+  "status": "playable",
+  "targets": ["Xbox Séries"],
+  "toolchain": "Ps3recomp",
+  "approach": "Static recompilation, DirectX/Vulka-dnz Recomp",
+  "maintainers": [{ "name": "yourhandle", "link": "https://github.com/Marco2000XboxBrasil/" }],
+  "links": [{ "label": "Discord", "url": "" }],
+  "help": ["Audio timing", "Controller mapping on Xbox"],
+  "notes": "All works, what's next, what hurts."
+}

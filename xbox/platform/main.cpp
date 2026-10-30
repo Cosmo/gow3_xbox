@@ -189,7 +189,7 @@ static bool dump_readable(std::string const& dump) {
 
 // Where a game folder is, in the player's words.
 static std::string describe_place(std::string const& dump) {
-    return _strnicmp(dump.c_str(),"D:\\DevelopmentFiles",19)==0 ? "internal storage" : "USB drive";
+    return _strnicmp(dump.c_str(),"D:\\DevelopmentFiles",19)==0 ? "armazenamento interno" : "pendrive";
 }
 
 // The chosen game folder (from the launcher's list or the picker) is kept in LocalState\game-folder.txt.
@@ -271,16 +271,16 @@ static std::string use_picked(winrt::Windows::Storage::StorageFolder const& fold
         remember_dump(dump);
         return dump;
     }
-    problem=listed ? "The game cannot read its files from "+dump+".\n\nCopy the dump to a USB drive and choose it there."
-                   : "There is no eboot.bin in "+(dump.empty() ? std::string("this folder") : dump)+".\n\nChoose the folder of "
-                     "the dump: the one with eboot.bin, sce_module, sce_sys and dvdroot_ps4.";
+    problem=listed ? "O jogo não consegue ler os arquivos de "+dump+".\n\nCopie o dump para um pendrive e escolha-o lá."
+                   : "Não há eboot.bin em "+(dump.empty() ? std::string("esta pasta") : dump)+".\n\nEscolha a pasta do "
+                     "dump: aquela com eboot.bin, sce_module, sce_sys e dvdroot_ps4.";
     return {};
 }
 
 // Asks for the dump folder until the game can read one; empty when the player closes the app instead.
 static std::string choose_dump(std::string text) {
     for(;;) {
-        if(ask(text,{"Choose folder","Close"})!=0) return {};
+        if(ask(text,{"Escolher pasta","Fechar"})!=0) return {};
         auto folder=pick_folder();
         if(!folder) { std::puts("Folder picker: nothing chosen"); continue; }
         if(auto dump=use_picked(folder,text);!dump.empty()) return dump;
@@ -292,9 +292,9 @@ static std::string choose_dump(std::string text) {
 static std::string switch_game_folder(std::string const& dump) {
     remember_dump(dump);
     const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP");
-    if(current&&_stricmp(dump.c_str(),current)==0) return "This is already the game folder.";
+    if(current&&_stricmp(dump.c_str(),current)==0) return "Esta já é a pasta do jogo.";
     std::printf("Game folder chosen: %s\n",dump.c_str());
-    ask("Game folder: "+dump+" ("+describe_place(dump)+")\n\nStart the app again to play from this folder.",{"OK"});
+    ask("Pasta do jogo: "+dump+" ("+describe_place(dump)+")\n\nAbra o app novamente para jogar com esta pasta.",{"OK"});
     close_app("game folder changed");
 }
 
@@ -316,7 +316,7 @@ extern "C" void gow3_uwp_use_game_folder(const char *dump,char *message,size_t s
 extern "C" void gow3_uwp_game_folder_line(char *out,size_t size) {
     const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP");
     if(!current||!*current) { std::snprintf(out,size,"%s",""); return; }
-    std::snprintf(out,size,"Game folder: %s (%s)",current,describe_place(current).c_str());
+    std::snprintf(out,size,"Pasta do jogo: %s (%s)",current,describe_place(current).c_str());
 }
 
 // Every \dumps\GodOfWar3 on a USB drive.
@@ -437,16 +437,16 @@ static bool prepare_game(std::string const& dump,std::string const& prepared,boo
         {"sce_module\\libc.prx",&files.libc},{"sce_module\\libSceFios2.prx",&files.fios},{"sce_sys\\param.sfo",&files.sfo}};
     for(auto [name,data]:inputs) {
         if(!read_file(dump+"\\"+name,*data)||data->empty()) {
-            stop("The game dump in "+dump+" is incomplete: "+name+" is missing or empty.\n\nCopy the whole dump again.",player);
+            stop("O dump do jogo em "+dump+" está incompleto: "+name+" está ausente ou vazio.\n\nCopie o dump inteiro novamente.",player);
             return false;
         }
     }
     Gow3Prepare::Bytes patch_file;
     const std::string patch_path=winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path())+
         "\\Patches\\CUSA01623.xml";
-    if(!read_file(patch_path,patch_file)) { stop("This app is incomplete: its patch file is missing. Install the app again.",player); return false; }
+    if(!read_file(patch_path,patch_file)) { stop("Este app está incompleto: falta o arquivo de patch. Instale o app novamente.",player); return false; }
     const std::string patches(patch_file.begin(),patch_file.end());
-    if(auto problem=Gow3Prepare::CheckTitle(files.sfo);!problem.empty()) { stop("The game dump in "+dump+" "+problem,player); return false; }
+    if(auto problem=Gow3Prepare::CheckTitle(files.sfo);!problem.empty()) { stop("O dump do jogo em "+dump+" "+problem,player); return false; }
     char marker[96];
     std::snprintf(marker,sizeof marker,"gow3-uwp-prepared " GOW3_PREPARED_FORMAT "\nsource %016llx\n",
                   static_cast<unsigned long long>(Gow3Prepare::Fingerprint(files,patches)));
@@ -462,13 +462,13 @@ static bool prepare_game(std::string const& dump,std::string const& prepared,boo
         }
         if(ready) { std::printf("Prepared game files: %s\n",prepared.c_str()); return true; }
     }
-    if(player&&ask("Game found: "+dump+"\n\nPrepare the game files? This is needed once and takes a few seconds.",{"Prepare","Cancel"})!=0)
+    if(player&&ask("Jogo encontrado: "+dump+"\n\nPreparar os arquivos do jogo? Isso é necessário uma vez e leva alguns segundos.",{"Preparar","Cancelar"})!=0)
         close_app("game preparation declined");
     std::printf("Preparing game files from %s\n",dump.c_str());
     const auto started=std::chrono::steady_clock::now();
     Gow3Prepare::Files result;
     try { result=Gow3Prepare::Prepare(files,patches); }
-    catch(std::exception const& error) { stop(std::string("Preparing the game files failed: ")+error.what(),player); return false; }
+    catch(std::exception const& error) { stop(std::string("Falha ao preparar os arquivos do jogo: ")+error.what(),player); return false; }
     DeleteFileFromAppW(winrt::to_hstring(prepared+"\\format.txt").c_str());
     // resolutions.txt: one "<resolution> <direct memory MiB>" line per patches-<resolution>.bin.
     std::string memory;
@@ -481,10 +481,10 @@ static bool prepare_game(std::string const& dump,std::string const& prepared,boo
     }
     written.emplace_back("resolutions.txt",Gow3Prepare::Bytes(memory.begin(),memory.end()));
     for(auto const& [name,data]:written) {
-        if(!write_file(prepared+"\\"+name,data)) { stop("Writing the prepared game file "+name+" failed.",player); return false; }
+        if(!write_file(prepared+"\\"+name,data)) { stop("Falha ao gravar o arquivo do jogo preparado "+name+".",player); return false; }
     }
     if(!write_file(prepared+"\\format.txt",Gow3Prepare::Bytes(marker,marker+std::strlen(marker)))) {
-        stop("Writing the prepared game files failed.",player); return false;
+        stop("Falha ao gravar os arquivos do jogo preparados.",player); return false;
     }
     std::printf("Prepared game files in %lld ms: %s\n",static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now()-started).count()),prepared.c_str());
@@ -572,13 +572,17 @@ static void loader() {
         if(!choose) dump=chosen_dump();
         if(!choose&&dump.empty()) dump=find_dump();
         if(!choose&&dump.empty()) dump=find_internal_dump();
-        if(dump.empty()) dump=choose_dump(choose ? "Choose the game folder." :
-            "No game found.\n\nChoose the folder of your God of War III Remastered dump (the folder with eboot.bin) on "
-            "a USB drive, or copy the dump to the console's internal storage anywhere under D:\\DevelopmentFiles.");
+        if(dump.empty()) dump=choose_dump(choose ? "Escolha a pasta do jogo." :
+            "Nenhum jogo encontrado.\n\nEscolha a pasta do seu dump do God of War III Remastered (a pasta com eboot.bin) em "
+            "um pendrive, ou copie o dump para o armazenamento interno do console, em qualquer lugar dentro de D:\\DevelopmentFiles.");
         if(dump.empty()) close_app("no game folder chosen");
         std::printf("Game folder: %s (%s)\n",dump.c_str(),describe_place(dump).c_str());
     }
     _putenv_s("SPARTAN_PRECOMPILE_DUMP",dump.c_str());
+    { // Launcher background: Assets\fundo.rgba of the package (xbox/scripts/background.ps1); missing = black background.
+        const std::string background=winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path())+"\\Assets\\fundo.rgba";
+        _putenv_s("SPARTAN_LAUNCHER_BACKGROUND",background.c_str());
+    }
     std::string user=winrt::to_string(local)+"\\user";
     CreateDirectoryW((std::wstring(local)+L"\\user").c_str(),nullptr);
     CreateDirectoryW((std::wstring(local)+L"\\Prepared").c_str(),nullptr);

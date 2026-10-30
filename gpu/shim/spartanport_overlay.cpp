@@ -23,6 +23,9 @@
 #include "spartanport_perf_stats.h"
 #include "../../src/actor_hook.h"
 
+#ifdef GOW3_UWP
+extern "C" std::FILE* gow3_uwp_fopen(const char* path, const char* mode); // xbox/platform/runtime_compat.c
+#endif
 extern SpartanActorSlot spartanport_actor_slots[2];
 extern "C" void runtime_restart(void); // src/probe.c: starts run.py again, ends this process
 #include "common/elf_info.h"
@@ -89,6 +92,10 @@ std::atomic<int> choice_result{-1}; // -1 open, -2 cancelled, else the chosen in
 // Save pictures: decoded by BeginChoice, made textures on the present thread (null = none).
 // Closed lists' textures wait in choice_retired until the backend has destroyed them.
 std::vector<SpartanPng::Image> choice_pictures;
+// Launcher background: read by SetBackground, made a texture on the present thread (null = none).
+SpartanPng::Image background_picture;
+ImTextureData* background_texture = nullptr;
+bool background_on = false;
 std::vector<ImTextureData*> choice_textures, choice_retired;
 std::atomic<bool> choice_retiring{false};
 float base_scale = 1.0f;
@@ -203,9 +210,9 @@ static const char* PadText(const char* playstation, const char* xbox, const char
 
 // Settings that only take effect when the game starts: the PC restarts it, the Xbox app cannot restart itself.
 #ifdef GOW3_UWP
-constexpr const char* RestartNote = "applied at the next start";
+constexpr const char* RestartNote = "aplicado na próxima inicialização";
 #else
-constexpr const char* RestartNote = "applied on restart";
+constexpr const char* RestartNote = "aplicado ao reiniciar";
 #endif
 std::string RestartSection(const char* name) {
     return std::string(name) + " (" + RestartNote + ")";
@@ -320,21 +327,21 @@ std::string OverlayText() {
     return P::Format(sample, items, s.overlay_layout == 0);
 }
 
-constexpr const char* Unsupported = "Unavailable: game version or code signature mismatch.";
+constexpr const char* Unsupported = "Indisponível: a versão do jogo ou a assinatura do código não confere.";
 
 void GameTab() {
     auto& s = SpartanSettings::Get();
-    ImGui::SeparatorText("Cheats");
+    ImGui::SeparatorText("Trapaças");
     if (BeginRows("##cheats")) {
-        static const char* const names[] = {"Infinite health", "Infinite magic", "Infinite item meter",
-                                            "Infinite Rage of Sparta", "Max red orbs",
-                                            "Unlock Very Hard", "Infinite Double Jumps"};
+        static const char* const names[] = {"Vida infinita", "Magia infinita", "Medidor de itens infinito",
+                                            "Fúria de Esparta infinita", "Orbes vermelhos no máximo",
+                                            "Desbloquear Muito Difícil", "Saltos duplos infinitos"};
         static const char* const helps[] = {
-            "Health stays full. Only Kratos is protected. Turning it off does not undo past refills.",
-            "Magic stays full.", "The item meter (bow, Helios' head, boots) stays full.",
-            "Rage of Sparta stays full.", "Red orbs stay at the maximum.",
-            "Enable before opening New Game. Does not change an existing save difficulty.",
-            "Repeat air jumps without landing. Turn off for normal movement."};
+            "A vida fica cheia. Só Kratos é protegido. Desativar não desfaz recargas anteriores.",
+            "A magia fica cheia.", "O medidor de itens (arco, cabeça de Hélio, botas) fica cheio.",
+            "A Fúria de Esparta fica cheia.", "Os orbes vermelhos ficam no máximo.",
+            "Ative antes de abrir Novo Jogo. Não muda a dificuldade de um save existente.",
+            "Repete saltos no ar sem tocar o chão. Desative para o movimento normal."};
         for (unsigned cheat = 0; cheat < SPARTAN_CHEAT_COUNT; ++cheat) {
             const bool available = (s.cheats_supported.load() & (1u << cheat)) != 0;
             ImGui::BeginDisabled(!available);
@@ -342,64 +349,64 @@ void GameTab() {
             ImGui::EndDisabled();
         }
         ImGui::BeginDisabled(!s.qte_supported.load());
-        CheckRow("Automatic QTE", s.auto_qte,
-                 s.qte_supported.load() ? "Quick-time prompts answer themselves: single presses, repeated "
-                                          "presses, holds and stick rotations."
+        CheckRow("QTE automático", s.auto_qte,
+                 s.qte_supported.load() ? "Os comandos de quick-time se resolvem sozinhos: toques únicos, "
+                                          "toques repetidos, botões segurados e giros do analógico."
                                         : Unsupported);
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
 
-    ImGui::SeparatorText("Controller");
+    ImGui::SeparatorText("Controle");
     if (BeginRows("##controller")) {
-        SliderRow("Vibration", s.vibration, 0, 100, "%d%%",
-                  "Strength of the controller's vibration. 0% turns it off.");
+        SliderRow("Vibração", s.vibration, 0, 100, "%d%%",
+                  "Intensidade da vibração do controle. Em 0%, desliga.");
 #ifndef GOW3_UWP // the Xbox has no mouse
-        SliderRow("Mouse prompt distance", s.mouse_prompt_distance, 16, 200, "%d px",
-                  "With Joystick prompts on Adaptive mouse: how far the mouse moves for one step of a rotation.");
-        static const char* const aim_styles[] = {"Relative", "Absolute"};
-        ChoiceRow("Right stick style", s.mouse_aim_style, aim_styles, nullptr, 2,
-                  "L2 aim with the mouse (Head of Helios, Bow of Apollo). Relative: the stick follows the "
-                  "movement and goes back to neutral when the mouse stops. Absolute: the stick points from "
-                  "where the mouse was when L2 was pressed to where it is.");
-        SliderRow("Right stick sensitivity", s.mouse_aim_sensitivity, 10, 200, "%d%%",
-                  "L2 aim with the mouse: lower needs more mouse movement for the same stick, higher less.");
-        CheckRow("Keep mouse in window", s.mouse_lock,
-                 "While you play, the mouse stays in the game window; this menu and other windows get it back.");
+        SliderRow("Distância do comando do mouse", s.mouse_prompt_distance, 16, 200, "%d px",
+                  "Com os comandos de analógico no modo Mouse adaptativo: quanto o mouse se move para cada passo de uma rotação.");
+        static const char* const aim_styles[] = {"Relativo", "Absoluto"};
+        ChoiceRow("Estilo do analógico direito", s.mouse_aim_style, aim_styles, nullptr, 2,
+                  "Mira do L2 com o mouse (Cabeça de Hélio, Arco de Apolo). Relativo: o analógico acompanha o "
+                  "movimento e volta ao neutro quando o mouse para. Absoluto: o analógico aponta de "
+                  "onde o mouse estava quando o L2 foi pressionado até onde ele está.");
+        SliderRow("Sensibilidade do analógico direito", s.mouse_aim_sensitivity, 10, 200, "%d%%",
+                  "Mira do L2 com o mouse: menor exige mais movimento do mouse para o mesmo movimento do analógico, maior exige menos.");
+        CheckRow("Manter o mouse na janela", s.mouse_lock,
+                 "Enquanto você joga, o mouse fica na janela do jogo; este menu e outras janelas o recuperam.");
 #endif
         ImGui::EndTable();
     }
 
-    ImGui::SeparatorText("Multipliers");
-    if (ImGui::Button("Reset all to 1x")) {
+    ImGui::SeparatorText("Multiplicadores");
+    if (ImGui::Button("Redefinir tudo para 1x")) {
         for (auto* m : {&s.red_orb_multiplier, &s.green_orb_multiplier, &s.blue_orb_multiplier,
                         &s.gold_orb_multiplier, &s.damage_dealt, &s.damage_taken}) {
             *m = 1.0f;
         }
         dirty = true;
     }
-    Help("Every multiplier back to 1x (the game's normal values).");
+    Help("Todos os multiplicadores voltam a 1x (os valores normais do jogo).");
     if (BeginRows("##multipliers")) {
         const bool max_orbs = (s.cheats_supported.load() & (1u << 4)) && s.cheats[4].load();
         ImGui::BeginDisabled(!s.red_orbs_supported.load() || max_orbs);
-        MultiplierRow("Red orbs", s.red_orb_multiplier,
+        MultiplierRow("Orbes vermelhos", s.red_orb_multiplier,
                       !s.red_orbs_supported.load() ? Unsupported
-                      : max_orbs ? "Turn off Max red orbs to use the multiplier."
-                                 : "Red orbs gained. Orbs you have and prices stay the same.");
+                      : max_orbs ? "Desative Orbes vermelhos no máximo para usar o multiplicador."
+                                 : "Orbes vermelhos ganhos. Os orbes que você tem e os preços não mudam.");
         ImGui::EndDisabled();
         ImGui::BeginDisabled(!s.orb_pickup_supported.load());
         const char* pickup = s.orb_pickup_supported.load() ? nullptr : Unsupported;
-        MultiplierRow("Green orbs (health)", s.green_orb_multiplier,
-                      pickup ? pickup : "Health from each green orb. The bar stays within its maximum.");
-        MultiplierRow("Blue orbs (magic)", s.blue_orb_multiplier,
-                      pickup ? pickup : "Magic from each blue orb. The bar stays within its maximum.");
-        MultiplierRow("Gold orbs (Rage of Sparta)", s.gold_orb_multiplier,
-                      pickup ? pickup : "Rage of Sparta from each gold orb. The bar stays within its maximum.");
+        MultiplierRow("Orbes verdes (vida)", s.green_orb_multiplier,
+                      pickup ? pickup : "Vida de cada orbe verde. A barra fica dentro do máximo.");
+        MultiplierRow("Orbes azuis (magia)", s.blue_orb_multiplier,
+                      pickup ? pickup : "Magia de cada orbe azul. A barra fica dentro do máximo.");
+        MultiplierRow("Orbes dourados (Fúria de Esparta)", s.gold_orb_multiplier,
+                      pickup ? pickup : "Fúria de Esparta de cada orbe dourado. A barra fica dentro do máximo.");
         ImGui::EndDisabled();
         ImGui::BeginDisabled(!s.damage_supported.load());
         const char* damage = s.damage_supported.load() ? nullptr : Unsupported;
-        MultiplierRow("Damage dealt", s.damage_dealt, damage ? damage : "Damage Kratos does to enemies.");
-        MultiplierRow("Damage taken", s.damage_taken, damage ? damage : "Damage Kratos takes.");
+        MultiplierRow("Dano causado", s.damage_dealt, damage ? damage : "Dano que Kratos causa aos inimigos.");
+        MultiplierRow("Dano recebido", s.damage_taken, damage ? damage : "Dano que Kratos recebe.");
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
@@ -407,8 +414,8 @@ void GameTab() {
     ImGui::SeparatorText("HUD");
     if (BeginRows("##hud")) {
         ImGui::BeginDisabled(!s.actor_watch_supported.load());
-        CheckRow("Enemy health bar", s.enemy_health_bar,
-                 s.actor_watch_supported.load() ? "A thin bar at the top for the last enemy hit." : Unsupported);
+        CheckRow("Barra de vida do inimigo", s.enemy_health_bar,
+                 s.actor_watch_supported.load() ? "Uma barra fina no topo para o último inimigo atingido." : Unsupported);
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
@@ -418,50 +425,50 @@ void ImageTab() {
     namespace G = SpartanGraphics;
     auto& s = SpartanSettings::Get();
 #ifndef GOW3_UWP // the Xbox shows the game full screen in step with the TV, without sharpening
-    ImGui::SeparatorText("Display");
+    ImGui::SeparatorText("Tela");
     if (BeginRows("##display")) {
-        ChoiceRow("Display mode", s.display_mode, G::DisplayModeNames.data(), nullptr, G::DisplayModeCount,
-                  "Windowed, borderless window or exclusive fullscreen.");
-        CheckRow("VSync", s.vsync, "Waits for the monitor: no tearing, a little more input delay.");
+        ChoiceRow("Modo de exibição", s.display_mode, G::DisplayModeNames.data(), nullptr, G::DisplayModeCount,
+                  "Janela, janela sem bordas ou tela cheia exclusiva.");
+        CheckRow("VSync", s.vsync, "Espera o monitor: sem rasgos na imagem, um pouco mais de atraso nos comandos.");
         ImGui::EndTable();
     }
     const int iw = s.image_width, ih = s.image_height, ww = s.window_width, wh = s.window_height;
     const bool downscaling = iw > ww || ih > wh;
     const bool rcas_blocked = s.rcas && !s.rcas_applied;
-    ImGui::SeparatorText("Sharpening");
+    ImGui::SeparatorText("Nitidez");
     if (BeginRows("##scaling")) {
         ImGui::BeginDisabled(rcas_blocked);
-        CheckRow("Sharpening (RCAS)", s.rcas,
-                 rcas_blocked && downscaling ? "No effect: the game's image is larger than the window."
-                 : rcas_blocked              ? "No effect: the game's image is smaller than the window."
-                                             : "Sharpens the final image.");
+        CheckRow("Nitidez (RCAS)", s.rcas,
+                 rcas_blocked && downscaling ? "Sem efeito: a imagem do jogo é maior que a janela."
+                 : rcas_blocked              ? "Sem efeito: a imagem do jogo é menor que a janela."
+                                             : "Deixa a imagem final mais nítida.");
         ImGui::EndDisabled();
         ImGui::BeginDisabled(!s.rcas || rcas_blocked);
-        SliderRow("Sharpening strength", s.rcas_strength, 0, 100, "%d%%", "How strong the sharpening is.");
+        SliderRow("Intensidade da nitidez", s.rcas_strength, 0, 100, "%d%%", "Quão forte é a nitidez.");
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
 #endif
-    ImGui::SeparatorText(RestartSection("Textures").c_str());
+    ImGui::SeparatorText(RestartSection("Texturas").c_str());
     if (BeginRows("##textures")) {
-        static const char* const anisotropy_labels[] = {"Game default", "2x", "4x", "8x", "16x"};
-        ChoiceRow("Anisotropic filtering", s.anisotropy, anisotropy_labels, G::Anisotropies.data(),
+        static const char* const anisotropy_labels[] = {"Padrão do jogo", "2x", "4x", "8x", "16x"};
+        ChoiceRow("Filtragem anisotrópica", s.anisotropy, anisotropy_labels, G::Anisotropies.data(),
                   int(G::Anisotropies.size()),
-                  "Sharper floors and walls seen at an angle. Little cost on most GPUs.");
+                  "Chão e paredes vistos de lado ficam mais nítidos. Custo baixo na maioria das GPUs.");
         ImGui::EndTable();
     }
 #ifndef GOW3_UWP
-    ImGui::TextDisabled("F12 saves a screenshot to the user\\screenshots folder.");
+    ImGui::TextDisabled("F12 salva uma captura de tela na pasta user\\screenshots.");
 #endif
-    ImGui::SeparatorText("Information");
+    ImGui::SeparatorText("Informações");
     if (BeginRows("##image_info")) {
         char text[96];
         std::snprintf(text, sizeof(text), "%d x %d", int(s.image_width), int(s.image_height));
-        InfoRow("Game image", text);
+        InfoRow("Imagem do jogo", text);
 #ifndef GOW3_UWP
         std::snprintf(text, sizeof(text), "%d x %d", int(s.window_width), int(s.window_height));
-        InfoRow("Window", text);
-        InfoRow("Sharpening", s.rcas_applied ? "applied" : "not applied");
+        InfoRow("Janela", text);
+        InfoRow("Nitidez", s.rcas_applied ? "aplicada" : "não aplicada");
 #endif
         ImGui::EndTable();
     }
@@ -470,54 +477,54 @@ void ImageTab() {
 void PerformanceTab() {
     namespace G = SpartanGraphics;
     auto& s = SpartanSettings::Get();
-    ImGui::SeparatorText("Live");
+    ImGui::SeparatorText("Em tempo real");
     if (BeginRows("##live")) {
 #ifdef GOW3_UWP
         // The Xbox runs the engine at 60 FPS: higher limits mean no limit.
-        static const char* const fps_labels[] = {"30", "60 (no limit)"};
+        static const char* const fps_labels[] = {"30", "60 (sem limite)"};
         static constexpr int fps_values[] = {30, 0};
-        ChoiceRow("Frame rate limit", s.fps_limit, fps_labels, fps_values, 2, "Caps the frame rate.");
+        ChoiceRow("Limite de FPS", s.fps_limit, fps_labels, fps_values, 2, "Limita a taxa de quadros.");
 #else
-        static const char* const fps_labels[] = {"30", "60", "100", "120", "144", "180", "240", "Unlimited"};
-        ChoiceRow("Frame rate limit", s.fps_limit, fps_labels, G::FpsLimits.data(), int(G::FpsLimits.size()),
-                  "Caps the frame rate. The engine frame rate (below) is the highest it can go.");
+        static const char* const fps_labels[] = {"30", "60", "100", "120", "144", "180", "240", "Ilimitado"};
+        ChoiceRow("Limite de FPS", s.fps_limit, fps_labels, G::FpsLimits.data(), int(G::FpsLimits.size()),
+                  "Limita a taxa de quadros. A taxa do motor (abaixo) é o máximo que ela pode atingir.");
         static const char* const engine_labels[] = {"60 (original)", "100", "120", "144", "180", "240"};
         static_assert(std::size(engine_labels) == G::EngineFps.size());
-        ChoiceRow("Engine frame rate", s.engine_fps, engine_labels, G::EngineFps.data(), int(G::EngineFps.size()),
-                  "The highest frame rate the game itself runs at. 60 for spots that break above it (a ledge "
-                  "Kratos cannot cross, a button-mash prompt). R3 + L1 + R1 or F9 go through the list.");
+        ChoiceRow("Taxa de quadros do motor", s.engine_fps, engine_labels, G::EngineFps.data(), int(G::EngineFps.size()),
+                  "A maior taxa de quadros em que o próprio jogo roda. 60 para trechos que quebram acima disso (uma beirada "
+                  "que Kratos não consegue cruzar, um comando de apertar botões repetidamente). R3 + L1 + R1 ou F9 percorrem a lista.");
         const int effective = G::EffectiveFps(s.fps_limit, SpartanSettings::EngineFpsNow());
         if (s.fps_limit == 0 || effective < s.fps_limit) {
             char text[48];
             std::snprintf(text, sizeof(text), "%d FPS (engine frame rate)", effective);
-            InfoRow("Effective limit", text);
+            InfoRow("Limite efetivo", text);
         }
         if (s.applied_engine_fps <= 60 && s.engine_fps > 60) {
-            InfoRow("Engine frame rate", "60 FPS: the frame rate patch is not available for this game build");
+            InfoRow("Taxa de quadros do motor", "60 FPS: o patch de taxa de quadros não está disponível para esta versão do jogo");
         }
 #endif
-        static const char* const queued_labels[] = {"1 (lowest latency)", "2", "Unlimited"};
-        ChoiceRow("Frames queued", s.frames_queued, queued_labels, G::FramesQueued.data(),
-                  int(G::FramesQueued.size()), "More frames queued: steadier FPS, slower response to input.");
-        CheckRow("Compile new shaders in the background", s.async_shaders,
-                 "Fewer stutters in new areas; an object or effect may appear a moment later.");
+        static const char* const queued_labels[] = {"1 (menor latência)", "2", "Ilimitado"};
+        ChoiceRow("Quadros na fila", s.frames_queued, queued_labels, G::FramesQueued.data(),
+                  int(G::FramesQueued.size()), "Mais quadros na fila: FPS mais estável, resposta mais lenta aos comandos.");
+        CheckRow("Compilar novos shaders em segundo plano", s.async_shaders,
+                 "Menos engasgos em áreas novas; um objeto ou efeito pode aparecer um instante depois.");
         ImGui::EndTable();
     }
 #ifdef GOW3_UWP
-    ImGui::SeparatorText("Applied at the next start");
+    ImGui::SeparatorText("Aplicado na próxima inicialização");
 #else
-    ImGui::SeparatorText("Applied on restart");
+    ImGui::SeparatorText("Aplicado ao reiniciar");
 #endif
     if (BeginRows("##restart")) {
 #ifdef GOW3_UWP
         // The resolutions the Xbox app prepares patches for; it reads the choice when it starts.
         static const char* const resolution_labels[] = {"720p · 1280 × 720", "900p · 1600 × 900",
-                                                        "1080p · 1920 × 1080 (native)", "4K · 3840 × 2160"};
+                                                        "1080p · 1920 × 1080 (nativa)", "4K · 3840 × 2160"};
         static const int resolution_values[] = {G::ParseResolution("720p"), G::ParseResolution("900p"),
                                                 G::ParseResolution("native"), G::ParseResolution("4K")};
-        ChoiceRow("Render resolution", s.render_resolution, resolution_labels, resolution_values, 4,
-                  "The resolution the game draws at. Higher is sharper and slower; 4K may not fit in the "
-                  "Xbox's memory.");
+        ChoiceRow("Resolução de renderização", s.render_resolution, resolution_labels, resolution_values, 4,
+                  "A resolução em que o jogo desenha. Maior é mais nítido e mais lento; 4K pode não caber na "
+                  "memória do Xbox.");
 #else
         // The built-in sizes, then those of the enabled mods' patch files (ultrawide, for one).
         // The same labels as the launcher (graphics_options.resolution_label): name, exact size, aspect ratio.
@@ -540,13 +547,13 @@ void PerformanceTab() {
         for (std::size_t i = 0; i < resolution_names.size(); ++i) {
             resolution_labels.push_back(i < G::Resolutions.size() ? builtin_labels[i] : resolution_names[i].c_str());
         }
-        ChoiceRow("Render resolution", s.render_resolution, resolution_labels.data(), nullptr,
-                  int(resolution_labels.size()), "The resolution the game draws at. Higher is sharper and slower.");
+        ChoiceRow("Resolução de renderização", s.render_resolution, resolution_labels.data(), nullptr,
+                  int(resolution_labels.size()), "A resolução em que o jogo desenha. Maior é mais nítido e mais lento.");
 #endif
-        CheckRow("Game reads GPU data without waiting", s.stale_readback,
-                 "Big FPS gain. Switch it off if lighting or objects look wrong.");
-        CheckRow("Deferred GPU readbacks", s.deferred_readback,
-                 "Fewer waits for the GPU. Switch it off if textures or shadows look wrong.");
+        CheckRow("O jogo lê dados da GPU sem esperar", s.stale_readback,
+                 "Grande ganho de FPS. Desative se a iluminação ou os objetos parecerem errados.");
+        CheckRow("Leituras da GPU adiadas", s.deferred_readback,
+                 "Menos esperas pela GPU. Desative se as texturas ou sombras parecerem erradas.");
         ImGui::EndTable();
     }
 }
@@ -555,15 +562,15 @@ void OverlayTab() {
     namespace P = SpartanPerfStats;
     auto& s = SpartanSettings::Get();
     if (BeginRows("##overlay_on")) {
-        CheckRow("Show overlay", s.show_fps, "The performance overlay in a corner of the screen.");
+        CheckRow("Mostrar overlay", s.show_fps, "O overlay de desempenho em um canto da tela.");
         ImGui::EndTable();
     }
     ImGui::BeginDisabled(!s.show_fps);
-    ImGui::SeparatorText("What to show");
+    ImGui::SeparatorText("O que mostrar");
     if (ImGui::BeginTable("##overlay_items", 2, ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableNextColumn();
-        static const char* const names[] = {"FPS", "Frametime", "Upscaler", "GPU (name and use)", "CPU (game)",
-                                            "RAM (game / total)", "VRAM (used / available)"};
+        static const char* const names[] = {"FPS", "Tempo de quadro", "Upscaler", "GPU (nome e uso)", "CPU (jogo)",
+                                            "RAM (jogo / total)", "VRAM (usada / disponível)"};
         for (unsigned item = 0; item < 7; ++item) {
 #ifdef GOW3_UWP
             if (item == 2 || item == 3) {
@@ -578,40 +585,40 @@ void OverlayTab() {
             }
         }
         ImGui::TableNextColumn();
-        ImGui::TextDisabled("Preview");
+        ImGui::TextDisabled("Pré-visualização");
         ImGui::BeginChild("##preview", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
         ImGui::SetWindowFontScale(s.overlay_scale / 100.0f);
         const std::string text = OverlayText();
-        ImGui::TextUnformatted(text.empty() ? "(nothing selected)" : text.c_str());
+        ImGui::TextUnformatted(text.empty() ? "(nada selecionado)" : text.c_str());
         ImGui::SetWindowFontScale(1.0f);
         ImGui::EndChild();
         ImGui::EndTable();
     }
-    ImGui::SeparatorText("Appearance");
+    ImGui::SeparatorText("Aparência");
     if (BeginRows("##appearance")) {
-        SliderRow("Font size", s.overlay_scale, 50, 300, "%d%%", "Size of the overlay text.");
-        static const char* const corners[] = {"Top left", "Top right", "Bottom left", "Bottom right"};
-        ChoiceRow("Corner", s.overlay_corner, corners, nullptr, 4, "Where the overlay sits.");
-        SliderRow("Background opacity", s.overlay_opacity, 0, 100, "%d%%", "0% is no background.");
-        static const char* const layouts[] = {"One line", "One item per line"};
-        ChoiceRow("Layout", s.overlay_layout, layouts, nullptr, 2, "Items side by side or stacked.");
+        SliderRow("Tamanho da fonte", s.overlay_scale, 50, 300, "%d%%", "Tamanho do texto do overlay.");
+        static const char* const corners[] = {"Superior esquerdo", "Superior direito", "Inferior esquerdo", "Inferior direito"};
+        ChoiceRow("Canto", s.overlay_corner, corners, nullptr, 4, "Onde o overlay fica.");
+        SliderRow("Opacidade do fundo", s.overlay_opacity, 0, 100, "%d%%", "0% é sem fundo.");
+        static const char* const layouts[] = {"Uma linha", "Um item por linha"};
+        ChoiceRow("Disposição", s.overlay_layout, layouts, nullptr, 2, "Itens lado a lado ou empilhados.");
         ImGui::EndTable();
     }
     ImGui::EndDisabled();
-    ImGui::SeparatorText("About");
+    ImGui::SeparatorText("Sobre");
     if (BeginRows("##about")) {
         const auto& elf = Common::ElfInfo::Instance();
         char text[160];
         std::snprintf(text, sizeof(text), "%.*s v%.*s", int(elf.GameSerial().size()), elf.GameSerial().data(),
                       int(elf.AppVer().size()), elf.AppVer().data());
-        InfoRow("Game", text);
+        InfoRow("Jogo", text);
         const u32 total = background_total;
         if (total) {
-            std::snprintf(text, sizeof(text), "loading %u%%", u32(u64(background_done) * 100 / total));
+            std::snprintf(text, sizeof(text), "carregando %u%%", u32(u64(background_done) * 100 / total));
         } else {
-            std::snprintf(text, sizeof(text), "ready");
+            std::snprintf(text, sizeof(text), "pronto");
         }
-        InfoRow("Shader cache", text);
+        InfoRow("Cache de shaders", text);
         std::string hooks;
         const auto add = [&](bool on, const char* name) {
             if (on) {
@@ -619,12 +626,12 @@ void OverlayTab() {
             }
         };
         add(s.cheats_supported.load() != 0, "cheats");
-        add(s.red_orbs_supported.load(), "red orbs");
-        add(s.orb_pickup_supported.load(), "orb pickups");
-        add(s.damage_supported.load(), "damage");
-        add(s.actor_watch_supported.load(), "enemy health");
-        add(s.qte_supported.load(), "QTE prompts");
-        InfoRow("Game hooks", hooks.empty() ? "none" : hooks.c_str());
+        add(s.red_orbs_supported.load(), "orbes");
+        add(s.orb_pickup_supported.load(), "coleta");
+        add(s.damage_supported.load(), "dano");
+        add(s.actor_watch_supported.load(), "inimigos");
+        add(s.qte_supported.load(), "QTE");
+        InfoRow("Extensões do jogo", hooks.empty() ? "nenhum" : hooks.c_str());
         ImGui::EndTable();
     }
 }
@@ -670,7 +677,7 @@ void Menu() {
     }
     const float footer = ImGui::GetFrameHeightWithSpacing() * 2.0f + ImGui::GetTextLineHeightWithSpacing() * 2.0f;
     if (ImGui::BeginTabBar("##tabs")) {
-        static const char* const tabs[TabCount] = {"Game", "Image", "Performance", "Overlay"};
+        static const char* const tabs[TabCount] = {"Jogo", "Imagem", "Desempenho", "Overlay"};
         for (int tab = 0; tab < TabCount; ++tab) {
             const ImGuiTabItemFlags flags = requested_tab == tab ? ImGuiTabItemFlags_SetSelected : 0;
             if (!ImGui::BeginTabItem(tabs[tab], nullptr, flags)) {
@@ -702,25 +709,24 @@ void Menu() {
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
 #ifdef GOW3_UWP // the app keeps its settings in its own storage
-    ImGui::TextDisabled("%s", footer_help ? footer_help : "LB / RB: switch tabs. RS + LT: close.");
+    ImGui::TextDisabled("%s", footer_help ? footer_help : "LB / RB: trocar de aba. RS + LT: fechar.");
 #else
-    ImGui::TextDisabled("%s", footer_help ? footer_help : PadText("L1 / R1 or Q / E: switch tabs. Settings are saved in spartanport.ini.", "LB / RB or Q / E: switch tabs. Settings are saved in spartanport.ini.", "L / R or Q / E: switch tabs. Settings are saved in spartanport.ini."));
+    ImGui::TextDisabled("%s", footer_help ? footer_help : PadText("L1 / R1 ou Q / E: trocar de aba. As configurações são salvas em spartanport.ini.", "LB / RB ou Q / E: trocar de aba. As configurações são salvas em spartanport.ini.", "L / R ou Q / E: trocar de aba. As configurações são salvas em spartanport.ini."));
 #endif
     ImGui::PopTextWrapPos();
     if (const int changes = RestartChanges()) {
 #ifdef GOW3_UWP
         // The app cannot restart itself; it reads these settings the next time it starts.
-        ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%d change%s take%s effect the next time you start the app.",
-                           changes, changes == 1 ? "" : "s", changes == 1 ? "s" : "");
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%d alteraç%s %s em vigor na próxima vez que você iniciar o app.", changes, changes == 1 ? "ão" : "ões", changes == 1 ? "entra" : "entram");
     } else {
         ImGui::NewLine();
     }
 #else
-        ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%d change%s need%s a restart (unsaved progress is lost).",
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%d change%s need%s a restart (unsaved progress is lost).",
                            changes, changes == 1 ? "" : "s", changes == 1 ? "s" : "");
         ImGui::SameLine();
         ImGui::BeginDisabled(!std::getenv("SPARTAN_RESTART_COMMAND"));
-        if (ImGui::Button("Apply and restart")) {
+        if (ImGui::Button("Aplicar e reiniciar")) {
             // The new launch confirms the options once the game shows; run.py restores the
             // previous ones if it never does (restart_unconfirmed).
             s.restart_unconfirmed = true;
@@ -732,9 +738,9 @@ void Menu() {
         ImGui::NewLine();
     }
 #endif
-    const float close_width = ImGui::CalcTextSize("Close").x + ImGui::GetStyle().FramePadding.x * 2;
+    const float close_width = ImGui::CalcTextSize("Fechar").x + ImGui::GetStyle().FramePadding.x * 2;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - close_width);
-    if (ImGui::Button("Close")) {
+    if (ImGui::Button("Fechar")) {
         keep_open = false;
     }
     ImGui::End();
@@ -805,14 +811,14 @@ void TextEntryBox() {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
-    ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%s", text_entry_prompt.c_str());
+    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s", text_entry_prompt.c_str());
     ImGui::Separator();
     ImGui::SetWindowFontScale(1.4f);
     ImGui::Text("%s_", text_entry_text.c_str());
     ImGui::SetWindowFontScale(1.0f);
     ImGui::Separator();
-    ImGui::TextDisabled("Keyboard: type, Backspace to erase, Enter = OK, Esc = cancel");
-    ImGui::TextDisabled("%s", PadText("Controller: Cross (A) = OK, Circle (B) = cancel", "Controller: A = OK, B = cancel", "Controller: B = OK, A = cancel"));
+    ImGui::TextDisabled("Teclado: digite, Backspace para apagar, Enter = OK, Esc = cancelar");
+    ImGui::TextDisabled("%s", PadText("Controle: Cross (A) = OK, Circle (B) = cancelar", "Controle: A = OK, B = cancelar", "Controle: B = OK, A = cancelar"));
     ImGui::End();
 }
 
@@ -828,7 +834,7 @@ void ChoiceBox() {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
-    ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%s", choice_title.c_str());
+    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s", choice_title.c_str());
     ImGui::Separator();
     // Save pictures are 228x128; rows without one keep the text aligned when others have one.
     const bool pictures = std::any_of(choice_textures.begin(), choice_textures.end(),
@@ -847,7 +853,7 @@ void ChoiceBox() {
             ImGui::SameLine();
         }
         if (selected) {
-            ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.55f, 1.0f), "> %s", choice_items[i].c_str());
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "> %s", choice_items[i].c_str());
         } else {
             ImGui::Text("  %s", choice_items[i].c_str());
         }
@@ -865,7 +871,7 @@ void ChoiceBox() {
         }
     }
     ImGui::Separator();
-    ImGui::TextDisabled("%s", PadText("Up/Down or D-pad: choose   Enter or Cross (A): OK   Esc or Circle (B): cancel", "Up/Down or D-pad: choose   Enter or A: OK   Esc or B: cancel", "Up/Down or D-pad: choose   Enter or B: OK   Esc or A: cancel"));
+    ImGui::TextDisabled("%s", PadText("Cima/Baixo ou D-pad: escolher   Enter ou Cross (A): OK   Esc ou Circle (B): cancelar", "Cima/Baixo ou D-pad: escolher   Enter ou A: OK   Esc ou B: cancelar", "Cima/Baixo ou D-pad: escolher   Enter ou B: OK   Esc ou A: cancelar"));
     ImGui::End();
 }
 
@@ -882,7 +888,7 @@ void LoadingScreen() {
     const u32 done = loading_done, total = loading_total;
     ImGui::SetWindowFontScale(1.6f);
     ImGui::TextUnformatted(loading_label.empty()
-                              ? (total ? "Loading shader cache..." : "Preparing graphics...")
+                              ? (total ? "Carregando cache de shaders..." : "Preparando gráficos...")
                               : loading_label.c_str());
     ImGui::SetWindowFontScale(1.0f);
     if (total) {
@@ -891,11 +897,24 @@ void LoadingScreen() {
                       u32(u64(done) * 100 / total));
         ImGui::ProgressBar(float(done) / float(total), ImVec2(-1.0f, 0.0f), count);
     }
-    ImGui::TextDisabled(loading_label.empty() ? "The first start after an update takes longer." :
-                       "Other shaders will be prepared during gameplay.");
+    ImGui::TextDisabled(loading_label.empty() ? "A primeira inicialização após uma atualização demora mais." :
+                       "Os demais shaders serão preparados durante o jogo.");
     ImGui::End();
 }
 
+// Launcher: the picture behind the menu (SetBackground), drawn first so every window is above it.
+// `dim` darkens it for the loading screen, whose text has no panel behind it.
+void BackgroundImage(bool dim) {
+    if (!background_on || !background_texture) {
+        return;
+    }
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImU32 tint = dim ? IM_COL32(110, 110, 110, 255) : IM_COL32(255, 255, 255, 255);
+    ImGui::GetBackgroundDrawList()->AddImage(
+        background_texture->GetTexRef(), viewport->Pos,
+        ImVec2(viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y),
+        ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), tint);
+}
 void FpsCounter() {
     const auto& s = SpartanSettings::Get();
     const std::string text = OverlayText();
@@ -931,7 +950,7 @@ void BackgroundLoading() {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
-    ImGui::TextDisabled("Loading shader cache %u%%", u32(u64(done) * 100 / total));
+    ImGui::TextDisabled("Carregando cache de shaders %u%%", u32(u64(done) * 100 / total));
     ImGui::End();
 }
 
@@ -977,8 +996,8 @@ void ShowNotice(const std::string& text, int milliseconds) {
 
 void CycleEngineFps() {
     const int fps = SpartanSettings::CycleEngineFps();
-    ShowNotice(fps ? "Engine frame rate: " + std::to_string(fps) + " FPS"
-                   : std::string("Engine frame rate: 60 FPS only (no frame rate patch for this game build)"));
+    ShowNotice(fps ? "Taxa de quadros do motor: " + std::to_string(fps) + " FPS"
+                   : std::string("Taxa de quadros do motor: somente 60 FPS (sem patch de taxa de quadros para esta versão do jogo)"));
 }
 
 void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) {
@@ -999,7 +1018,7 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
     style.WindowRounding = 6.0f;
     style.FrameRounding = 4.0f;
     style.GrabRounding = 4.0f;
-    style.Colors[ImGuiCol_WindowBg].w = 0.92f;
+    style.Colors[ImGuiCol_WindowBg].w = 0.92f; style.Colors[ImGuiCol_Text] = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); style.Colors[ImGuiCol_PlotHistogram] = ImVec4(0.0f, 0.55f, 0.0f, 1.0f);
 
     ImFontConfig font_config;
     font_config.FontDataOwnedByAtlas = false;
@@ -1089,6 +1108,14 @@ void RetireChoiceTextures() {
 
 // imgui_mutex held, before NewFrame: new pictures become textures, destroyed ones are freed.
 void UpdateChoiceTextures() {
+    if (!background_picture.rgba.empty() && !background_texture) {
+        ImTextureData* tex = IM_NEW(ImTextureData)();
+        tex->Create(ImTextureFormat_RGBA32, background_picture.width, background_picture.height);
+        std::memcpy(tex->GetPixels(), background_picture.rgba.data(), background_picture.rgba.size());
+        ImGui::RegisterUserTexture(tex);
+        background_texture = tex;
+        background_picture = SpartanPng::Image{};
+    }
     if (!choice_pictures.empty()) {
         choice_textures.assign(choice_pictures.size(), nullptr);
         for (size_t i = 0; i < choice_pictures.size(); ++i) {
@@ -1286,6 +1313,53 @@ void SetBackgroundLoading(u32 done, u32 total) {
     background_total = total;
 }
 
+void SetBackground(bool on, const char* path) {
+    {
+        std::scoped_lock lock{imgui_mutex};
+        if (!on) {
+            background_on = false;
+            return;
+        }
+        if (background_texture) {
+            background_on = true; // already loaded
+            return;
+        }
+    }
+    SpartanPng::Image picture;
+    if (path && *path) {
+#ifdef GOW3_UWP
+        std::FILE* file = gow3_uwp_fopen(path, "rb");
+#else
+        std::FILE* file = std::fopen(path, "rb");
+#endif
+        if (file) {
+            unsigned char header[8];
+            if (std::fread(header, 1, sizeof header, file) == sizeof header) {
+                const u32 width = u32(header[0]) | (u32(header[1]) << 8) | (u32(header[2]) << 16) | (u32(header[3]) << 24);
+                const u32 height = u32(header[4]) | (u32(header[5]) << 8) | (u32(header[6]) << 16) | (u32(header[7]) << 24);
+                if (width >= 1 && height >= 1 && width <= 4096 && height <= 4096) {
+                    picture.width = int(width);
+                    picture.height = int(height);
+                    picture.rgba.resize(size_t(width) * height * 4);
+                    if (std::fread(picture.rgba.data(), 1, picture.rgba.size(), file) != picture.rgba.size()) {
+                        picture = SpartanPng::Image{};
+                    } else {
+                        for (size_t i = 0; i + 3 < picture.rgba.size(); i += 4) {
+                            std::swap(picture.rgba[i], picture.rgba[i + 2]); // file is B,G,R,A
+                        }
+                    }
+                }
+            }
+            std::fclose(file);
+        }
+    }
+    if (picture.rgba.empty()) {
+        std::puts("Launcher background: file missing or invalid; keeping the black background");
+    }
+    std::scoped_lock lock{imgui_mutex};
+    background_picture = std::move(picture);
+    background_on = !background_picture.rgba.empty();
+}
 void SetLoading(bool active, u32 done, u32 total) {
     loading_done = done;
     loading_total = total;
@@ -1362,6 +1436,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     UpdateChoiceTextures();
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
+    BackgroundImage(loading);
 #ifdef GOW3_UWP
     Gow3Uwp::Overlay::Render(*overlay_instance);
 #endif
